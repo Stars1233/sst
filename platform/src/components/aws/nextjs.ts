@@ -27,7 +27,7 @@ import { dynamodb, lambda } from "@pulumi/aws";
 import { URL_UNAVAILABLE } from "./linkable.js";
 import { getOpenNextPackage } from "../../util/compare-semver.js";
 
-const DEFAULT_OPEN_NEXT_VERSION = "3.1.6";
+const DEFAULT_OPEN_NEXT_VERSION = "3.4.1";
 const DEFAULT_CACHE_POLICY_ALLOWED_HEADERS = ["x-open-next-cache-key"];
 
 type BaseFunction = {
@@ -219,7 +219,7 @@ export interface NextjsArgs extends SsrSiteArgs {
    * @example
    *
    * If you want to use a custom `build` script from your `package.json`. This is useful if you have a custom build process or want to use a different version of OpenNext.
-   * open-next by default uses the `build` script for building next-js app in your `package.json`. You can customize the build command in open-next configuration.
+   * OpenNext by default uses the `build` script for building next-js app in your `package.json`. You can customize the build command in OpenNext configuration.
    * ```js
    * {
    *   buildCommand: "npm run build:open-next"
@@ -314,19 +314,20 @@ export interface NextjsArgs extends SsrSiteArgs {
    */
   assets?: SsrSiteArgs["assets"];
   /**
-   * Configure the [OpenNext](https://open-next.js.org) version used to build the Next.js app.
+   * Configure the [OpenNext](https://opennext.js.org) version used to build the Next.js app.
    *
    * :::note
    * This does not automatically update to the latest OpenNext version. It remains pinned to the version of SST you have.
    * :::
    *
-   * By default, this is pinned to the version of OpenNext that was released with the SST version you are using. You can [find this in the source](https://github.com/sst/ion/blob/dev/platform/src/components/aws/nextjs.ts) under `DEFAULT_OPEN_NEXT_VERSION`.
+   * By default, this is pinned to the version of OpenNext that was released with the SST version you are using. You can [find this in the source](https://github.com/sst/sst/blob/dev/platform/src/components/aws/nextjs.ts#L30) under `DEFAULT_OPEN_NEXT_VERSION`.
+   * OpenNext changed its package name from `open-next` to `@opennextjs/aws` in version `3.1.4`. SST will choose the correct one based on the version you provide.
    *
-   * @default The latest version of OpenNext
+   * @default The latest version of OpenNext pinned to the version of SST you are using.
    * @example
    * ```js
    * {
-   *   openNextVersion: "3.0.2"
+   *   openNextVersion: "3.4.1"
    * }
    * ```
    */
@@ -482,6 +483,9 @@ export interface NextjsArgs extends SsrSiteArgs {
 export class Nextjs extends Component implements Link.Linkable {
   private cdn?: Output<Cdn>;
   private assets?: Bucket;
+  private revalidationQueue?: Output<Queue | undefined>;
+  private revalidationTable?: Output<dynamodb.Table | undefined>;
+  private revalidationFunction?: Output<Function | undefined>;
   private server?: Output<Function>;
   private devUrl?: Output<string>;
 
@@ -542,7 +546,8 @@ export class Nextjs extends Component implements Link.Linkable {
       pagesManifest,
       prerenderManifest,
     } = loadBuildOutput();
-    const revalidationQueue = createRevalidationQueue();
+    const { revalidationQueue, revalidationFunction } =
+      createRevalidationQueue();
     const revalidationTable = createRevalidationTable();
     createRevalidationTableSeeder();
     const plan = buildPlan();
@@ -562,6 +567,9 @@ export class Nextjs extends Component implements Link.Linkable {
 
     this.assets = bucket;
     this.cdn = distribution;
+    this.revalidationQueue = revalidationQueue;
+    this.revalidationTable = revalidationTable;
+    this.revalidationFunction = revalidationFunction;
     this.server = serverFunction;
     this.registerOutputs({
       _hint: all([this.cdn.domainUrl, this.cdn.url]).apply(
@@ -787,39 +795,39 @@ export class Nextjs extends Component implements Link.Linkable {
               },
               ...(revalidationQueueArn
                 ? [
-                    {
-                      actions: [
-                        "sqs:SendMessage",
-                        "sqs:GetQueueAttributes",
-                        "sqs:GetQueueUrl",
-                      ],
-                      resources: [revalidationQueueArn],
-                    },
-                  ]
+                  {
+                    actions: [
+                      "sqs:SendMessage",
+                      "sqs:GetQueueAttributes",
+                      "sqs:GetQueueUrl",
+                    ],
+                    resources: [revalidationQueueArn],
+                  },
+                ]
                 : []),
               ...(revalidationTableArn
                 ? [
-                    {
-                      actions: [
-                        "dynamodb:BatchGetItem",
-                        "dynamodb:GetRecords",
-                        "dynamodb:GetShardIterator",
-                        "dynamodb:Query",
-                        "dynamodb:GetItem",
-                        "dynamodb:Scan",
-                        "dynamodb:ConditionCheckItem",
-                        "dynamodb:BatchWriteItem",
-                        "dynamodb:PutItem",
-                        "dynamodb:UpdateItem",
-                        "dynamodb:DeleteItem",
-                        "dynamodb:DescribeTable",
-                      ],
-                      resources: [
-                        revalidationTableArn,
-                        `${revalidationTableArn}/*`,
-                      ],
-                    },
-                  ]
+                  {
+                    actions: [
+                      "dynamodb:BatchGetItem",
+                      "dynamodb:GetRecords",
+                      "dynamodb:GetShardIterator",
+                      "dynamodb:Query",
+                      "dynamodb:GetItem",
+                      "dynamodb:Scan",
+                      "dynamodb:ConditionCheckItem",
+                      "dynamodb:BatchWriteItem",
+                      "dynamodb:PutItem",
+                      "dynamodb:UpdateItem",
+                      "dynamodb:DeleteItem",
+                      "dynamodb:DescribeTable",
+                    ],
+                    resources: [
+                      revalidationTableArn,
+                      `${revalidationTableArn}/*`,
+                    ],
+                  },
+                ]
                 : []),
             ],
             injections: [
@@ -946,13 +954,14 @@ export class Nextjs extends Component implements Link.Linkable {
     }
 
     function createRevalidationQueue() {
-      return all([outputPath, openNextOutput]).apply(
+      const ret = all([outputPath, openNextOutput]).apply(
         ([outputPath, openNextOutput]) => {
-          if (openNextOutput.additionalProps?.disableIncrementalCache) return;
+          if (openNextOutput.additionalProps?.disableIncrementalCache)
+            return {};
 
           const revalidationFunction =
             openNextOutput.additionalProps?.revalidationFunction;
-          if (!revalidationFunction) return;
+          if (!revalidationFunction) return {};
 
           const queue = new Queue(
             `${name}RevalidationEvents`,
@@ -966,7 +975,7 @@ export class Nextjs extends Component implements Link.Linkable {
             },
             { parent },
           );
-          queue.subscribe(
+          const subscriber = queue.subscribe(
             {
               description: `${name} ISR revalidator`,
               handler: revalidationFunction.handler,
@@ -997,9 +1006,13 @@ export class Nextjs extends Component implements Link.Linkable {
             },
             { parent },
           );
-          return queue;
+          return { queue, function: subscriber.nodes.function };
         },
       );
+      return {
+        revalidationQueue: output(ret.queue),
+        revalidationFunction: output(ret.function),
+      };
     }
 
     function createRevalidationTable() {
@@ -1395,6 +1408,18 @@ if(event.request.headers["cloudfront-viewer-longitude"]) {
        * The Amazon CloudFront CDN that serves the app.
        */
       cdn: this.cdn,
+      /**
+       * The Amazon SQS queue that triggers the ISR revalidator.
+       */
+      revalidationQueue: this.revalidationQueue,
+      /**
+       * The Amazon DynamoDB table that stores the ISR revalidation data.
+       */
+      revalidationTable: this.revalidationTable,
+      /**
+       * The Lambda function that processes the ISR revalidation.
+       */
+      revalidationFunction: this.revalidationFunction,
     };
   }
 

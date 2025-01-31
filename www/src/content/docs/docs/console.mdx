@@ -69,9 +69,9 @@ At a high level, here's how the Console works.
 
   For your functions running [Live](/docs/live/), the logs will be streamed in real-time from your local machine.
 
-- It's open-source, built with SST, and deployed with [Seed](https://seed.run)
+- It's open-source and built with SST
 
-  The Console is a full-stack SST app. You can view the [source on GitHub](https://github.com/sst/console).
+  The Console is an SST app. You can view the [source on GitHub](https://github.com/sst/console). It's also auto-deployed using itself.
 
 ---
 
@@ -211,15 +211,36 @@ To customize IAM permissions for the CloudFormation stack:
 
 ## Pricing
 
-The Console pricing is based on the number of times the Lambda functions in your SST apps are invoked per month and it uses the following tiers.
+[Starting Feb 1, 2025](/blog/console-pricing-update), the Console will be priced based on the number of active resources in your SST apps.
+
+| Resources | Rate per resource |
+|-----------|-----------|
+| First 2000   | $0.086  |
+| 2000+        | $0.032 |
+
+**Free Tier**: Workspaces with 350 active resources or fewer.
+
+So for example, if you go over the free tier and have 351 active resources in a month, your bill will be 351 x $0.086 = $30.2.
+
+A couple of things to note.
+
+- These are calculated for a given workspace every month.
+- A resource is what SST creates in your cloud provider. [Learn more below](#faq).
+- You can always access personal stages, even if you're above the free tier.
+- If you haven't deployed to a stage in a month, its resources won't count as active.
+- For volume pricing, feel free to [contact us][contact-us].
+
+---
+
+#### Old pricing
+
+Previously, the Console pricing was based on the number of times the Lambda functions in your SST apps are invoked per month and it used the following tiers.
 
 | Invocations | Rate (per invocation) |
 |-------------|------|
 | First 1M    | Free |
 | 1M - 10M    | $0.00002 |
 | 10M+        | $0.000002 |
-
-A couple of things to note.
 
 - These are calculated for a given workspace on a monthly basis.
 - This does not apply to personal stages, they'll be free forever.
@@ -242,7 +263,7 @@ Here are a few of the things the Console does for you.
 
 ### Logs
 
-With the Console, you don't need to go to CloudWatch to look at the logs for your functions. You can view:
+With the Console, you don't need to go to CloudWatch to look at the logs for your functions, containers and other log groups. You can view:
 
 - Past logs
 - Live logs
@@ -254,7 +275,7 @@ With the Console, you don't need to go to CloudWatch to look at the logs for you
 
 ### Issues
 
-The Console will automatically show you any errors in your Lambda functions in real-time. And notify you through Slack or email.
+The Console will automatically show you any errors in your Node.js Lambda functions in real-time. And notify you through Slack or email.
 
 ![SST Console Issues](../../../assets/docs/console/sst-console-issues.png)
 
@@ -264,32 +285,11 @@ With Issues, there is:
 - **Source maps** are supported **automatically**
 - **No impact on performance** or cold starts, since the functions aren't modified
 
-:::tip
+:::note
 Issues works out of the box and has no impact on performance or cold starts.
 :::
 
----
-
-#### Behind the scenes
-
-Here's how it works.
-
-1. When an app is deployed or when an account is first synced, we add a log subscriber to your Lambda functions. 
-   - There's a maximum of 2 subscribers allowed. More on this below.
-2. The subscriber filters for anything that looks like an error and processes those log lines.
-3. It applies the source maps to the error stack trace.
-4. Finally, it groups similar looking errors together.
-
----
-
-#### Log subscriber
-
-The process of adding a log subscriber to your Lambda functions might fail. This can happen if:
-
-- We don't have enough permissions to add a subscriber. In this case, update the permissions that you've granted to the Console.
-- We've hit the limit for the number of subscribers. To fix this, you can remove one of the existing subscribers.
-
-You can see these errors in the Issues tab. Once you've fixed these issues, you can hit **Retry** and it'll try attaching the subscriber again. 
+Issues currently only supports Node.js functions. Other runtimes and containers are on the roadmap.
 
 ---
 
@@ -309,9 +309,51 @@ console.error(new Error("my-error"));
 
 ---
 
-#### Limits
+#### How it works
 
-There's a soft limit of 10K issues per hour per workspace. If your account goes over this limit, Issues will be temporarily paused. You can [contact us][contact-us] if this happens.
+Here's how Issues works behind the scenes.
+
+1. When an app is deployed or when an account is first synced, we add a log subscriber to the CloudWatch Log groups in your SST apps.
+   - This is added to your AWS account and includes a Lambda function. More on this below.
+2. If the subscriber filter matches anything that looks like an error it invokes the Lambda function.
+3. The Lambda function tries to parse the error and fetches the source maps from the state bucket in your account.
+4. It then hits an endpoint in the SST Console and passes in that error.
+5. Finally, the Console groups similar looking errors together and displays them.
+
+---
+
+#### Log subscriber
+
+The log subscriber also includes the following:
+
+1. **Lambda function** that'll be invoked when a log with an error is matched.
+   - This function has a max concurrency set to 10.
+   - If it falls behind on processing by over 10 minutes, it'll discard the logs.
+   - This prevents it from scaling indefinitely when there's a burst of errors.
+   - This also means that if there are a lot of errors, the alerts might be delayed by up to 10 minutes.
+2. **IAM role** that gives it access to query the logs and the state bucket for the source maps.
+3. **Log group** with a 1 day retention.
+
+These are added to **every region** in your AWS account that has a CloudWatch log group from your SST apps. It's deployed using a CloudFormation stack.
+
+This process of adding a log subscriber might fail if we:
+
+- Don't have enough permissions. In this case, update the permissions that you've granted to the Console.
+- Hit the limit for the number of subscribers, there's a maximum of 2 subscribers. To fix this, you can remove one of the existing subscribers.
+
+You can see these errors in the Issues tab. Once you've fixed these issues, you can hit **Retry** and it'll try attaching the subscriber again. 
+
+---
+
+#### Costs
+
+AWS will bill you for the Lambda function log subscriber that's in your account. This is usually fairly minimal.
+
+Even if your apps are generating an infinite number of errors, the Lambda function is limited to a concurrency of 10. So the **maximum** you'll be charged $43 x 10 = **$430 per month x # of regions** that are being monitored.
+
+You can also disable Issues from your workspace settings, if you are using a separate service for monitoring.
+
+[Learn more about Lambda pricing](https://aws.amazon.com/lambda/pricing/).
 
 ---
 
@@ -381,21 +423,24 @@ It also shows the SST command that was run that triggered the update. If the upd
 
 ### Autodeploy
 
-The Console can auto-deploy your apps when you _git push_ to your repo. Autodeploy uses [AWS CodeBuild](https://aws.amazon.com/codebuild/) in your account to run the build.
+The Console can auto-deploy your apps when you _git push_ to your GitHub repo. Autodeploy uses [AWS CodeBuild](https://aws.amazon.com/codebuild/) in your account to run the build.
 
 ![SST Console Autodeploy](../../../assets/docs/console/sst-console-autodeploy.png)
 
-:::note
-Autodeploy is currently free while in beta.
-:::
+We designed Autodeploy to be a better fit for SST apps when compared to alternatives like GitHub Actions or CircleCI.
 
-You are only charged for the number of build minutes that you use. The pricing is based on the machine config used. [Learn more about CodeBuild pricing](https://aws.amazon.com/codebuild/pricing/).
-
-:::tip
-You can configure how Autodeploy works through your `sst.config.ts`.
-:::
-
-By default, a small CodeBuild machine is used. But you can configure this, we'll look at how below.
+1. **Easy to get started**
+   - Autodeploy supports the standard branch and PR workflow out of the box. You don't need a config file to get started.
+   - There are no complicated steps in configuring your AWS credentials; since your AWS account is already connected to the Console.
+2. **Configurable**
+   - You can configure how Autodeploy works directly through your `sst.config.ts`.
+   - It's typesafe and the callbacks let you customize how to respond to incoming git events.
+3. **Runs in your AWS account**
+   - The builds are run in your AWS account.
+   - It can also be configured to run in your VPC. This is useful if your builds need to access private resources.
+4. **Integrates with the Console**
+   - You can see which resources were updated in a deploy.
+   - Your resource updates will also show you the related git commit.
 
 ---
 
@@ -422,7 +467,7 @@ To get started with Autodeploy:
    Next you can configure a branch or PR environment by selecting the **stage** you want deployed to an **AWS account**. You can optionally configure **environment variables** as well.
 
    :::note
-   Stage names by default are generated based on the branch or PR that's configured.
+   Stage names by default are generated based on the branch or PR.
    :::
 
    By default, stages are based on the branch name or PR. We'll look at this in detail below.
@@ -435,42 +480,112 @@ To get started with Autodeploy:
    PR stages are removed when the PR is closed while branch stages are not.
    :::
 
-   For example, if you configures a branch environment for the stage `production`, any git pushes to the `production` branch will be auto-deployed. Similarly, if you create a new PR, say PR#12, the Console will auto-deploy a stage called `pr-12`.
+   For example, if you configure a branch environment for the stage `production`, any git pushes to the `production` branch will be auto-deployed. Similarly, if you create a new PR, say PR#12, the Console will auto-deploy a stage called `pr-12`.
+
+   You can also manually trigger a deployment through the Console by passing in a Git ref and the stage you want to deploy to.
 
 5. **Setup alerts**
 
    Once your deploys are working, you can set the Console to send alerts for your deploys. Head over to your **Workspace Settings** > **Alerts** and add a new alert to be notified on any Autodeploys, or only on Autodeploy errors.
 
+:::tip
+You can configure how Autodeploy works through your `sst.config.ts`.
+:::
+
+While Autodeploy supports the standard branch and PR workflow out of the box, it can be configured in depth through your `sst.config.ts`.
+
 ---
 
-#### Config
+#### Configure
 
-The above behavior can be configured through the [`console.autodeploy`](/docs/reference/config/#console-autodeploy) option in the `sst.config.ts`.
+The above can be configured through the [`console.autodeploy`](/docs/reference/config/#console-autodeploy) option in the `sst.config.ts`.
 
-For example, if you want git pushes to the `main` branch auto-deploy the `production` stage and use a _large_ build machine, you set something like this in your `sst.config.ts`.
+```ts title="sst.config.ts" {7-15}
+export default $config({
+  // Your app's config
+  app(input) { },
+  // Your app's resources
+  async run() { },
+  // Your app's Console config
+  console: {
+    autodeploy: {
+      target(event) {
+        if (event.type === "branch" && event.branch === "main" && event.action === "pushed") {
+          return { stage: "production" };
+        }
+      }
+    }
+  }
+});
+```
+
+In the above example we are using the `console.autodeploy.target` option to change the stage that's tied to a git event. Only git pushes to the `main` branch to auto-deploy to the `production` stage.
+
+This works because if `target` returns `undefined`, the deploy is skipped. And if you provide your own `target` callback, it overrides the default behavior.
+
+:::tip
+You can use the git events to configure how your app is auto-deployed.
+:::
+
+Through the `console.autodeploy.runner` option, you can configure the runner that's used. For example, if you wanted to increase the timeouts to 2 hours, you can.
 
 ```ts title="sst.config.ts"
 console: {
   autodeploy: {
-    target(event) {
-      if (event.type === "branch" && event.branch === "main" && event.action === "pushed") {
-        return {
-          stage: "production",
-          runner: { engine: "codebuild", compute: "large" }
-        };
+    runner: { timeout: "2 hours" }
+  }
+}
+```
+
+This also takes the stage name, so you can set the runner config for a specific stage.
+
+```ts title="sst.config.ts"
+console: {
+  autodeploy: {
+    runner(stage) {
+      if (stage === "production") return { timeout: "3 hours" };
+    }
+  }
+}
+```
+
+You can also have your builds run inside your VPC.
+
+```ts title="sst.config.ts"
+console: {
+  autodeploy: {
+    runner: {
+      vpc: {
+        id: "vpc-0be8fa4de860618bb",
+        securityGroups: ["sg-0399348378a4c256c"],
+        subnets: ["subnet-0b6a2b73896dc8c4c", "subnet-021389ebee680c2f0"]
+      }
+    }
+  }
+} 
+```
+
+Or specify files and directories to be cached.
+
+```ts title="sst.config.ts"
+console: {
+  autodeploy: {
+    runner: {
+      cache: {
+        paths: ["node_modules", "/path/to/cache"]
       }
     }
   }
 }
 ```
 
-Read more about this over on the [Config doc](/docs/reference/config/#console-autodeploy).
+Read more about the [`console.autodeploy`](/docs/reference/config/#console-autodeploy) config.
 
 ---
 
 #### Environments
 
-The Console needs to know which account it needs to autodeploy into. You configure this under **App's Settings** > **Autodeploy**. Each environment takes:
+The Console needs to know which account it needs to autodeploy into. You configure this under the **App's Settings** > **Autodeploy**. Each environment takes:
 
 1. **Stage**
 
@@ -496,67 +611,78 @@ The Console needs to know which account it needs to autodeploy into. You configu
 
 ---
 
-#### Build image
+#### How it works
 
-Autodeploy is run on an `x86_64` machine using the [`al2/standard/5.0`](https://github.com/aws/aws-codebuild-docker-images/tree/master/al2/x86_64/standard/5.0) build image.
+When you _git push_ to a branch, pull request, or tag, the following happens:
 
-You can change the architecture to use `arm64` and it'll use the [`al2/aarch64/standard/3.0`](https://github.com/aws/aws-codebuild-docker-images/tree/master/al2/aarch64/standard/3.0) image instead. You change this by setting `runner.architecture` through the [Config](/docs/reference/config/#console). 
+1. The stage name is generated based on the `console.autodeploy.target` callback.
+   1. If there is no callback, the stage name is a sanitized version of the branch or tag.
+   2. If there is a callback but no stage is returned, the deploy is skipped.
+2. The stage is matched against the environments in the Console to get the AWS account and any environment variables for the deploy.
+3. The runner config is generated based on the `console.autodeploy.runner`. Or the defaults are used.
+4. The deploy is run based on the above config.
 
-You can also configure what's used in the image:
+This only applies only to git events. If you trigger a deploy through the Console, you are asked to specify the stage you want to deploy to. So in this case, it skips step 1 from above and does not call `console.autodeploy.target`.
 
-- **Node**
+Both `target` and `runner` are optional and come with defaults, but they can be customized.
 
-  To specify the version of Node you want to use in your build, you can use the `.node-version`, `.nvmrc`, or use the `engine` field in your `package.json`.
+---
 
-  <Tabs>
-    <TabItem label="package.json">
-    ```js title="package.json"
-    {
-      engine: {
-        node: "20.15.1"
-      }
-    }
-    ```
-    </TabItem>
-    <TabItem label="node-version">
-    ```bash title=".node-version"
-    20.15.1
-    ```
-    </TabItem>
-    <TabItem label="nvmrc">
-    ```bash title=".nvmrc"
-    20.15.1
-    ```
-    </TabItem>
-  </Tabs>
+#### Costs
 
-- **Package manager**
-
-  To specify the package manager you want to use you can configure it through your `package.json`. 
-
-  ```js title="package.json"
-  {
-    packageManager: "pnpm@8.6.3"
-  }
-  ```
-
-Feel free to get in touch if you want to use your own build image or configure what's used in the build image further.
+AWS will bill you for the **CodeBuild build minutes** that are used to run your builds. [Learn more about CodeBuild pricing](https://aws.amazon.com/codebuild/pricing/).
 
 ---
 
 ## FAQ
 
+Here are some frequently asked questions about the Console.
+
 - Do I need to use the Console to use SST?
 
-  You don't need the Console to use SST. It displays the local logs from your terminal in a UI that's more convenient.
+  You **don't need the Console** to use SST. It compliments the CLI and has some features that help with managing your apps in production.
 
-- What if I don't want to pay for the Console?
+  That said, it is completely free to get started. You can create an account and invite your team, **without** having to add a **credit card**.
 
-  You can still invite your team and use it to view your local logs and stages.
+- Is there a free tier?
 
-- Do I need a credit card to get started?
+  If your workspace has 350 active resources or fewer for the month, it's considered to be in the free tier. This count also resets every month.
 
-  The Console is free to get started and **doesn't need a credit card**.
+- What happens if I go over the free tier?
+
+  You won't be able to access the _production_ or deployed stages till you add your billing details in the workspace settings.
+
+  Note that, you can continue to **access your personal stages**. Just make sure you have `sst dev` running locally. Otherwise the Console won't be able to detect that it's a personal stage.
+
+- What counts as a resource?
+
+  Resources are what SST creates in your cloud provider. This includes the resources created by both SST's built-in components, like `Function`, `Nextjs`, `Bucket`, and the ones created by any other Terraform/Pulumi provider.
+
+  Some components, like `Nextjs` and `StaticSite`, create multiple resources. In general, the more complex the component, the more resources it'll create.
+
+  You can see a [full list of resources](#resources) if you go to an app in your Console and navigate to a stage in it.
+
+  For some context, the Console is itself a pretty large [SST app](https://github.com/sst/console) and it has around 320 resources.
+
+- How are active resource counted?
+
+  At the start of every month, or billing cycle, the Console will track the stages that have been updated. All the resources in these stages are considered active for the month.
+
+  However, if the only update to a stage in a month was to remove it, the resources in that stage will not be counted as being active.
+
+---
+
+#### Old pricing FAQ
+
+Here were some frequently asked questions about the old pricing plan for the Console.
+
+- Do I need to switch to the new pricing?
+
+   If you are currently on the old plan, you don't have to switch and you won't be automatically switched over either.
+
+   You can go to the workspace settings and check out how much you'll be billed based on both the plans. To switch over, you can cancel your current plan and then subscribe to the new plan.
+
+   At some point in the future, we'll remove the old plan. But there's no specific timeline for it yet.
 
 - Which Lambda functions are included in the number of invocations?
 
@@ -566,13 +692,10 @@ Feel free to get in touch if you want to use your own build image or configure w
 
   Lambda functions that are invoked **locally are not included**.
 
-- Can I access the personal stages if I'm above the free tier?
-
-  If you go above the free tier in your _production_ stages, you **can still access your personal stages**. Just make sure you have `sst dev` running locally, otherwise the Console won't be able to detect that it's a personal stage.
-
 - My invocation volume is far higher than the listed tiers. Are there any other options?
 
   Feel free to [contact us][contact-us] and we can figure out a pricing plan that works for you.
+
 
 If you have any further questions, feel free to [send us an email][contact-us].
 

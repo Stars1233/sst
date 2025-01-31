@@ -14,9 +14,9 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
-	"github.com/sst/ion/pkg/process"
-	"github.com/sst/ion/pkg/project/path"
-	"github.com/sst/ion/pkg/runtime"
+	"github.com/sst/sst/v3/pkg/process"
+	"github.com/sst/sst/v3/pkg/project/path"
+	"github.com/sst/sst/v3/pkg/runtime"
 )
 
 type Worker struct {
@@ -167,8 +167,7 @@ func (r *PythonRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*
 			// 1. Install python dependencies locally with the correct versions
 			// TOOD: walln - when uv supports specifying the platform that would be a good idea
 			// but its not there yet
-			uvSyncCmd := process.CommandContext(
-				ctx,
+			uvSyncCmd := process.Command(
 				"uv",
 				"sync")
 
@@ -184,8 +183,7 @@ func (r *PythonRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*
 			}
 
 			// 2. Convert the virtualenv to site-packages so that lambda can find the packages
-			sitePackagesCmd := process.CommandContext(
-				ctx,
+			sitePackagesCmd := process.Command(
 				"cp",
 				"-r",
 				filepath.Join(workDir, ".venv", "lib", "python3.*", "site-packages", "*"),
@@ -200,8 +198,7 @@ func (r *PythonRuntime) Build(ctx context.Context, input *runtime.BuildInput) (*
 			}
 
 			// 3. Remove the virtualenv because it does not need to be included in the zip
-			removeVirtualEnvCmd := process.CommandContext(
-				ctx,
+			removeVirtualEnvCmd := process.Command(
 				"rm",
 				"-rf",
 				filepath.Join(workDir, ".venv"))
@@ -318,7 +315,7 @@ func (r *PythonRuntime) Run(ctx context.Context, input *runtime.RunInput) (runti
 				if source.Subdirectory != nil {
 					repo_url = repo_url + "#subdirectory=" + *source.Subdirectory
 				}
-				// uv run --with git+https://github.com/sst/ion.git#subdirectory=sdk/python python.py
+				// uv run --with git+https://github.com/sst/sst/v3.git#subdirectory=sdk/python python.py
 				args = append(args, "--with", repo_url)
 			}
 		}
@@ -330,8 +327,7 @@ func (r *PythonRuntime) Run(ctx context.Context, input *runtime.RunInput) (runti
 		input.WorkerID,
 	)
 
-	cmd := process.CommandContext(
-		ctx,
+	cmd := process.Command(
 		"uv",
 		args...)
 	cmd.Env = append(input.Env, "AWS_LAMBDA_RUNTIME_API="+input.Server)

@@ -49,25 +49,29 @@ export function transform<T extends object>(
 }
 
 export class Component extends ComponentResource {
+  private componentType: string;
+  private componentName: string;
+
   constructor(
     type: string,
     name: string,
     args?: Inputs,
     opts?: ComponentResourceOptions,
-    _versionInfo: {
-      _version: number;
-      _message: string;
-      _forceUpgrade?: `v${number}`;
-    } = { _version: 1, _message: "" },
   ) {
     const transforms = ComponentTransforms.get(type) ?? [];
     for (const transform of transforms) {
-      transform({ props: args, opts });
+      transform({ name, props: args, opts });
     }
     super(type, name, args, {
       transformations: [
         // Ensure logical and physical names are prefixed
         (args) => {
+          // Ensure component names do not contain spaces
+          if (name.includes(" "))
+            throw new Error(
+              `Invalid component name "${name}" (${args.type}). Component names cannot contain spaces.`,
+            );
+
           // Ensure names are prefixed with parent's name
           if (
             args.type !== type &&
@@ -93,6 +97,7 @@ export class Component extends ComponentResource {
             args.type === "pulumi-nodejs:dynamic:Resource" ||
             args.type === "random:index/randomId:RandomId" ||
             args.type === "random:index/randomPassword:RandomPassword" ||
+            args.type === "command:local:Command" ||
             args.type === "tls:index/privateKey:PrivateKey" ||
             // resources manually named
             [
@@ -132,6 +137,7 @@ export class Component extends ComponentResource {
               "aws:appsync/domainName:DomainName",
               "aws:appsync/domainNameApiAssociation:DomainNameApiAssociation",
               "aws:ec2/routeTableAssociation:RouteTableAssociation",
+              "aws:ecs/clusterCapacityProviders:ClusterCapacityProviders",
               "aws:efs/fileSystem:FileSystem",
               "aws:efs/mountTarget:MountTarget",
               "aws:efs/accessPoint:AccessPoint",
@@ -141,8 +147,6 @@ export class Component extends ComponentResource {
               "aws:iam/userPolicy:UserPolicy",
               "aws:cloudfront/cachePolicy:CachePolicy",
               "aws:cloudfront/distribution:Distribution",
-              "aws:cloudwatch/eventRule:EventRule",
-              "aws:cloudwatch/eventTarget:EventTarget",
               "aws:cloudwatch/logGroup:LogGroup",
               "aws:cognito/identityPoolRoleAttachment:IdentityPoolRoleAttachment",
               "aws:cognito/identityProvider:IdentityProvider",
@@ -154,6 +158,7 @@ export class Component extends ComponentResource {
               "aws:lambda/permission:Permission",
               "aws:lambda/provisionedConcurrencyConfig:ProvisionedConcurrencyConfig",
               "aws:lb/listener:Listener",
+              "aws:lb/listenerRule:ListenerRule",
               "aws:rds/proxyDefaultTargetGroup:ProxyDefaultTargetGroup",
               "aws:rds/proxyTarget:ProxyTarget",
               "aws:route53/record:Record",
@@ -169,8 +174,10 @@ export class Component extends ComponentResource {
               "aws:ses/domainIdentityVerification:DomainIdentityVerification",
               "aws:sesv2/configurationSetEventDestination:ConfigurationSetEventDestination",
               "aws:sesv2/emailIdentity:EmailIdentity",
+              "aws:sns/topicPolicy:TopicPolicy",
               "aws:sns/topicSubscription:TopicSubscription",
               "aws:sqs/queuePolicy:QueuePolicy",
+              "aws:ssm/parameter:Parameter",
               "cloudflare:index/record:Record",
               "cloudflare:index/workerDomain:WorkerDomain",
               "docker-build:index:Image",
@@ -205,6 +212,11 @@ export class Component extends ComponentResource {
               ],
               field: "identifier",
               cb: () => physicalName(63, args.name).toLowerCase(),
+            },
+            {
+              types: ["aws:cloudwatch/eventTarget:EventTarget"],
+              field: "targetId",
+              cb: () => physicalName(64, args.name),
             },
             {
               types: [
@@ -270,6 +282,7 @@ export class Component extends ComponentResource {
             {
               types: [
                 "aws:elasticache/subnetGroup:SubnetGroup",
+                "aws:rds/clusterParameterGroup:ClusterParameterGroup",
                 "aws:rds/parameterGroup:ParameterGroup",
                 "aws:rds/subnetGroup:SubnetGroup",
               ],
@@ -376,16 +389,24 @@ export class Component extends ComponentResource {
       ...opts,
     });
 
+    this.componentType = type;
+    this.componentName = name;
+  }
+
+  /** @internal */
+  protected registerVersion(input: {
+    new: number;
+    old?: number;
+    message?: string;
+    forceUpgrade?: `v${number}`;
+  }) {
     // Check component version
-    const oldVersion = $cli.state.version[name];
-    const newVersion = _versionInfo._version;
+    const oldVersion = input.old;
+    const newVersion = input.new ?? 1;
     if (oldVersion) {
-      const className = type.replaceAll(":", ".");
+      const className = this.componentType.replaceAll(":", ".");
       // Invalid forceUpgrade value
-      if (
-        _versionInfo._forceUpgrade &&
-        _versionInfo._forceUpgrade !== `v${newVersion}`
-      ) {
+      if (input.forceUpgrade && input.forceUpgrade !== `v${newVersion}`) {
         throw new VisibleError(
           [
             `The value of "forceUpgrade" does not match the version of "${className}" component.`,
@@ -394,8 +415,8 @@ export class Component extends ComponentResource {
         );
       }
       // Version upgraded without forceUpgrade
-      if (oldVersion < newVersion && !_versionInfo._forceUpgrade) {
-        throw new VisibleError(_versionInfo._message);
+      if (oldVersion < newVersion && !input.forceUpgrade) {
+        throw new VisibleError(input.message ?? "");
       }
       // Version downgraded
       if (oldVersion > newVersion) {
@@ -410,7 +431,7 @@ export class Component extends ComponentResource {
 
     // Set version
     if (newVersion > 1) {
-      new Version(name, newVersion, { parent: this });
+      new Version(this.componentName, newVersion, { parent: this });
     }
   }
 }
@@ -418,7 +439,7 @@ export class Component extends ComponentResource {
 const ComponentTransforms = new Map<string, any[]>();
 export function $transform<T, Args, Options>(
   resource: { new (name: string, args: Args, opts?: Options): T },
-  cb: (args: Args, opts: Options) => void,
+  cb: (args: Args, opts: Options, name: string) => void,
 ) {
   // @ts-expect-error
   const type = resource.__pulumiType;
@@ -429,14 +450,14 @@ export function $transform<T, Args, Options>(
       ComponentTransforms.set(type, transforms);
     }
     transforms.push((input: any) => {
-      cb(input.props, input.opts);
+      cb(input.props, input.opts, input.name);
       return input;
     });
     return;
   }
   runtime.registerStackTransformation((input) => {
     if (input.type !== type) return;
-    cb(input.props as any, input.opts as any);
+    cb(input.props as any, input.opts as any, input.name);
     return input;
   });
 }
@@ -470,4 +491,10 @@ export class Version extends ComponentResource {
     super("sst:sst:Version", target + "Version", {}, opts);
     this.registerOutputs({ target, version });
   }
+}
+
+export type ComponentVersion = { major: number; minor: number };
+export function parseComponentVersion(version: string): ComponentVersion {
+  const [major, minor] = version.split(".");
+  return { major: parseInt(major), minor: parseInt(minor) };
 }

@@ -18,7 +18,10 @@ export type FunctionBuilder = Output<{
 export function functionBuilder(
   name: string,
   definition: Input<string | FunctionArn | FunctionArgs>,
-  defaultArgs: Pick<FunctionArgs, "description" | "link" | "permissions">,
+  defaultArgs: Pick<
+    FunctionArgs,
+    "description" | "link" | "environment" | "permissions" | "_skipHint"
+  >,
   argsTransform?: Transform<FunctionArgs>,
   opts?: ComponentResourceOptions,
 ): FunctionBuilder {
@@ -26,6 +29,7 @@ export function functionBuilder(
     if (typeof definition === "string") {
       // Case 1: The definition is an ARN
       if (definition.startsWith("arn:")) {
+        const parts = definition.split(":");
         return {
           getFunction: () => {
             throw new VisibleError(
@@ -34,7 +38,7 @@ export function functionBuilder(
           },
           arn: output(definition),
           invokeArn: output(
-            `arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${definition}/invocations`,
+            `arn:${parts[1]}:apigateway:${parts[3]}:lambda:path/2015-03-31/functions/${definition}/invocations`,
           ),
         };
       }
@@ -70,6 +74,13 @@ export function functionBuilder(
                 ...(link ?? []),
               ],
             ),
+            environment: all([
+              defaultArgs?.environment,
+              definition.environment,
+            ]).apply(([defaultEnvironment, environment]) => ({
+              ...(defaultEnvironment ?? {}),
+              ...(environment ?? {}),
+            })),
             permissions: all([
               defaultArgs?.permissions,
               definition.permissions,

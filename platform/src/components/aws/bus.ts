@@ -1,9 +1,9 @@
 import { ComponentResourceOptions, Output, all, output } from "@pulumi/pulumi";
-import { Component, outputId, Transform, transform } from "../component";
+import { Component, Transform, transform } from "../component";
 import { Link } from "../link";
 import type { Input } from "../input";
 import { FunctionArgs, FunctionArn } from "./function";
-import { hashStringToPrettyString, physicalName, logicalName } from "../naming";
+import { physicalName } from "../naming";
 import { parseEventBusArn } from "./helpers/arn";
 import { BusLambdaSubscriber } from "./bus-lambda-subscriber";
 import { cloudwatch } from "@pulumi/aws";
@@ -68,7 +68,7 @@ export interface BusSubscriberArgs {
      * {
      *   pattern: {
      *     source: "my.source"
-     *   },
+     *   }
      * }
      * ```
      */
@@ -81,12 +81,14 @@ export interface BusSubscriberArgs {
      * ```js
      * {
      *   pattern: {
-     *     price_usd: [{numeric: [">=", 100]}]
-     *   },
+     *     detail: {
+     *       price_usd: [{numeric: [">=", 100]}]
+     *     }
+     *   }
      * }
      * ```
      */
-    detail?: { [key: string]: any };
+    detail?: Record<string, any>;
     /**
      * A list of "detail-type" values to match against. "detail-type" typically defines
      * the kind of event that is occurring.
@@ -96,7 +98,7 @@ export interface BusSubscriberArgs {
      * {
      *   pattern: {
      *     detailType: ["orderPlaced"]
-     *   },
+     *   }
      * }
      * ```
      */
@@ -132,7 +134,7 @@ export interface BusSubscriberArgs {
  * #### Add a subscriber
  *
  * ```ts
- * bus.subscribe("src/subscriber.handler");
+ * bus.subscribe("MySubscriber", "src/subscriber.handler");
  * ```
  *
  * #### Link the bus to a resource
@@ -147,7 +149,7 @@ export interface BusSubscriberArgs {
  *
  * Once linked, you can publish messages to the bus from your function code.
  *
- * ```ts title="app/page.tsx" {1,7}
+ * ```ts title="app/page.tsx" {1,9}
  * import { Resource } from "sst";
  * import { EventBridgeClient, PutEventsCommand } from "@aws-sdk/client-eventbridge";
  *
@@ -196,6 +198,13 @@ export class Bus extends Component implements Link.Linkable {
         ),
       );
     }
+  }
+
+  /**
+   * The ARN of the EventBus.
+   */
+  public get arn() {
+    return this.bus.arn;
   }
 
   /**
@@ -467,7 +476,7 @@ export class Bus extends Component implements Link.Linkable {
     return {
       properties: {
         name: this.name,
-        arn: this.nodes.bus.arn,
+        arn: this.arn,
       },
       include: [
         permission({

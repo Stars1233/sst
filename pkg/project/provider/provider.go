@@ -12,9 +12,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/sst/ion/pkg/flag"
+	"github.com/sst/sst/v3/pkg/flag"
+	"github.com/sst/sst/v3/pkg/id"
 	"golang.org/x/exp/slog"
-	"golang.org/x/sync/errgroup"
 )
 
 type Home interface {
@@ -57,7 +57,7 @@ type DevSession interface {
 const SSM_NAME_BOOTSTRAP = "/sst/bootstrap"
 
 var ErrLockExists = fmt.Errorf("Concurrent update detected, run `sst unlock --stage=<stage>` to delete lock file and retry.")
-
+var ErrLockNotFound = fmt.Errorf("Lock not found")
 var passphraseCache = map[Home]map[string]string{}
 
 func Copy(from Home, to Home, app, stage string) error {
@@ -118,16 +118,12 @@ func Passphrase(backend Home, app, stage string) (string, error) {
 }
 
 type Summary struct {
-	Version         string         `json:"version"`
-	UpdateID        string         `json:"updateID"`
-	Command         string         `json:"command"`
-	TimeStarted     string         `json:"timeStarted"`
-	TimeCompleted   string         `json:"timeCompleted"`
-	ResourceUpdated int            `json:"resourceUpdated"`
-	ResourceCreated int            `json:"resourceCreated"`
-	ResourceDeleted int            `json:"resourceDeleted"`
-	ResourceSame    int            `json:"resourceSame"`
-	Errors          []SummaryError `json:"errors"`
+	Version       string         `json:"version"`
+	UpdateID      string         `json:"updateID"`
+	Command       string         `json:"command"`
+	TimeStarted   string         `json:"timeStarted"`
+	TimeCompleted string         `json:"timeCompleted"`
+	Errors        []SummaryError `json:"errors"`
 }
 
 type SummaryError struct {
@@ -150,9 +146,9 @@ func PutSummary(backend Home, app, stage, updateID string, summary Summary) erro
 	return putData(backend, "summary", app, stage+"/"+updateID, false, summary)
 }
 
-func PutUpdate(backend Home, app, stage string, update Update) error {
+func PutUpdate(backend Home, app, stage string, update *Update) error {
 	slog.Info("putting update", "app", app, "stage", stage)
-	update.RunID = os.Getenv("SST_RUN_ID")
+	update.RunID = flag.SST_RUN_ID
 	return putData(backend, "update", app, stage+"/"+update.ID, false, update)
 }
 
@@ -179,28 +175,27 @@ func PutSecrets(backend Home, app, stage string, data map[string]string) error {
 	return putData(backend, "secret", app, stage, true, data)
 }
 
-func PushState(backend Home, updateID string, app, stage string, from string) error {
-	slog.Info("pushing state", "app", app, "stage", stage, "from", from)
-	file, err := os.Open(from)
-	if err != nil {
-		return nil
-	}
-	var group errgroup.Group
-	fileBytes, err := io.ReadAll(file)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(fileBytes, &map[string]interface{}{})
+func PushPartialState(backend Home, updateID, app, stage string, data []byte) error {
+	slog.Info("pushing partial state", "updateID", updateID)
+	err := json.Unmarshal(data, &map[string]interface{}{})
 	if err != nil {
 		return fmt.Errorf("something has corrupted the state file - refusing to upload: %w", err)
 	}
-	group.Go(func() error {
-		return backend.putData("app", app, stage, bytes.NewReader(fileBytes))
-	})
-	group.Go(func() error {
-		return backend.putData("snapshot", app, stage+"/"+updateID, bytes.NewReader(fileBytes))
-	})
-	return group.Wait()
+	return backend.putData("app", app, stage, bytes.NewReader(data))
+}
+
+func PushSnapshot(backend Home, updateID, app, stage string, data []byte) error {
+	slog.Info("pushing snapshot", "updateID", updateID)
+	err := json.Unmarshal(data, &map[string]interface{}{})
+	if err != nil {
+		return fmt.Errorf("something has corrupted the state file - refusing to upload: %w", err)
+	}
+	return backend.putData("snapshot", app, stage+"/"+updateID, bytes.NewReader(data))
+}
+
+func PushEventLog(backend Home, updateID, app, stage string, reader io.Reader) error {
+	slog.Info("pushing eventlog", "updateID", updateID)
+	return backend.putData("eventlog", app, stage+"/"+updateID, reader)
 }
 
 var ErrStateNotFound = fmt.Errorf("state not found")
@@ -234,15 +229,16 @@ type lockData struct {
 	Ignore   bool      `json:"ignore"`
 }
 
-func Lock(backend Home, updateID, version, command, app, stage string) error {
+func Lock(backend Home, version, command, app, stage string) (*Update, error) {
+	updateID := id.Descending()
 	slog.Info("locking", "app", app, "stage", stage)
 	var lockData lockData
 	err := getData(backend, "lock", app, stage, false, &lockData)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !lockData.Created.IsZero() {
-		return ErrLockExists
+		return nil, ErrLockExists
 	}
 	lockData.RunID = os.Getenv("SST_RUN_ID")
 	lockData.Created = time.Now()
@@ -251,30 +247,57 @@ func Lock(backend Home, updateID, version, command, app, stage string) error {
 	lockData.Ignore = true
 	err = putData(backend, "lock", app, stage, false, lockData)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	err = PutUpdate(backend, app, stage, Update{
+	update := &Update{
 		ID:          updateID,
 		Version:     version,
 		Command:     command,
 		Errors:      nil,
 		TimeStarted: time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	err = PutUpdate(backend, app, stage, update)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return update, nil
 }
 
-func Unlock(backend Home, app, stage string) error {
+func Unlock(backend Home, version, app, stage string) error {
 	slog.Info("unlocking", "app", app, "stage", stage)
 	return removeData(backend, "lock", app, stage)
 }
 
+func ForceUnlock(backend Home, version, app, stage string) error {
+	slog.Info("force unlocking", "app", app, "stage", stage)
+	var lockData lockData
+	err := getData(backend, "lock", app, stage, false, &lockData)
+	if err != nil {
+		return err
+	}
+	if lockData.UpdateID != "" {
+		err = PutUpdate(backend, app, stage, &Update{
+			ID:            lockData.UpdateID,
+			Command:       lockData.Command,
+			RunID:         lockData.RunID,
+			Version:       version,
+			TimeCompleted: time.Now().Format(time.RFC3339),
+			Errors: []SummaryError{
+				{
+					Message: "Update did not complete and was force unlocked with the `sst unlock` command",
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return removeData(backend, "lock", app, stage)
+}
+
 func putData(backend Home, key, app, stage string, encrypt bool, data interface{}) error {
-	slog.Info("putting data", "key", key, "app", app, "stage", stage)
 	jsonBytes, err := json.Marshal(data)
 	if err != nil {
 		return err

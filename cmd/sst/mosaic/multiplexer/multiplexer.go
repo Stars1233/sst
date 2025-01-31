@@ -13,8 +13,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/gdamore/tcell/v2/views"
-	tcellterm "github.com/sst/ion/cmd/sst/mosaic/multiplexer/tcell-term"
-	"github.com/sst/ion/pkg/process"
+	tcellterm "github.com/sst/sst/v3/cmd/sst/mosaic/multiplexer/tcell-term"
+	"github.com/sst/sst/v3/pkg/process"
 )
 
 var PAD_HEIGHT = 0
@@ -37,11 +37,15 @@ type Multiplexer struct {
 	click    *tcell.EventMouse
 }
 
-func New(ctx context.Context) *Multiplexer {
+func New(ctx context.Context) (*Multiplexer, error) {
+	var err error
 	result := &Multiplexer{}
 	result.ctx = ctx
 	result.processes = []*pane{}
-	result.screen, _ = tcell.NewScreen()
+	result.screen, err = tcell.NewScreen()
+	if err != nil {
+		return nil, err
+	}
 	result.screen.Init()
 	result.screen.EnableMouse()
 	result.screen.Show()
@@ -55,7 +59,7 @@ func New(ctx context.Context) *Multiplexer {
 	if os.Getenv("TMUX") != "" {
 		process.Command("tmux", "set-option", "-p", "set-clipboard", "on").Run()
 	}
-	return result
+	return result, nil
 }
 
 func (s *Multiplexer) mainRect() (int, int) {

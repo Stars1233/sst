@@ -12,16 +12,17 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
-	"github.com/sst/ion/internal/fs"
-	"github.com/sst/ion/internal/util"
-	"github.com/sst/ion/pkg/flag"
-	"github.com/sst/ion/pkg/js"
-	"github.com/sst/ion/pkg/process"
-	"github.com/sst/ion/pkg/project/provider"
-	"github.com/sst/ion/pkg/runtime"
-	"github.com/sst/ion/pkg/runtime/node"
-	"github.com/sst/ion/pkg/runtime/python"
-	"github.com/sst/ion/pkg/runtime/worker"
+	"github.com/sst/sst/v3/internal/fs"
+	"github.com/sst/sst/v3/internal/util"
+	"github.com/sst/sst/v3/pkg/flag"
+	"github.com/sst/sst/v3/pkg/js"
+	"github.com/sst/sst/v3/pkg/process"
+	"github.com/sst/sst/v3/pkg/project/provider"
+	"github.com/sst/sst/v3/pkg/runtime"
+	"github.com/sst/sst/v3/pkg/runtime/golang"
+	"github.com/sst/sst/v3/pkg/runtime/node"
+	"github.com/sst/sst/v3/pkg/runtime/python"
+	"github.com/sst/sst/v3/pkg/runtime/worker"
 )
 
 type App struct {
@@ -31,6 +32,7 @@ type App struct {
 	Providers map[string]interface{} `json:"providers"`
 	Home      string                 `json:"home"`
 	Version   string                 `json:"version"`
+	Protect   bool                   `json:"protect"`
 	// Deprecated: Backend is now Home
 	Backend string `json:"backend"`
 	// Deprecated: RemovalPolicy is now Removal
@@ -85,6 +87,7 @@ type ProjectConfig struct {
 
 var ErrInvalidStageName = fmt.Errorf("invalid stage name")
 var ErrInvalidAppName = fmt.Errorf("invalid app name")
+var ErrAppNameChanged = fmt.Errorf("app name changed")
 var ErrV2Config = fmt.Errorf("sstv2 config detected")
 var ErrBuildFailed = fmt.Errorf("")
 var ErrVersionInvalid = fmt.Errorf("invalid version")
@@ -110,6 +113,7 @@ func New(input *ProjectConfig) (*Project, error) {
 			node.New(input.Version),
 			worker.New(),
 			python.New(),
+			golang.New(),
 		),
 	}
 	tmp := proj.PathWorkingDir()
@@ -198,6 +202,23 @@ console.log("~j" + JSON.stringify(mod.app({
 				return nil, ErrInvalidAppName
 			}
 
+			// Check if app name has changed by comparing the folder name inside ".pulumi/stacks"
+			// and the app name in the config file.
+			stacksDir := filepath.Join(proj.PathWorkingDir(), ".pulumi", "stacks")
+			files, err := os.ReadDir(stacksDir)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					return nil, err
+				}
+				files = []os.DirEntry{}
+			}
+			if len(files) > 0 {
+				appName := files[0].Name()
+				if appName != proj.app.Name {
+					return nil, ErrAppNameChanged
+				}
+			}
+
 			if proj.app.Home == "" {
 				return nil, util.NewReadableError(nil, `You must specify a "home" provider in the project configuration file.`)
 			}
@@ -256,7 +277,7 @@ func (proj *Project) LoadHome() error {
 		case "cloudflare":
 			match = &provider.CloudflareProvider{}
 		case "aws":
-			match = &provider.AwsProvider{}
+			match = provider.NewAwsProvider()
 		}
 		if match == nil {
 			continue
