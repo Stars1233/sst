@@ -9,12 +9,14 @@ export default $config({
     };
   },
   async run() {
-    const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
-    const redis = new sst.aws.Redis("MyRedis", { vpc });
+    const vpc = new sst.aws.Vpc("MyVpc");
+    const bucket = new sst.aws.Bucket("MyBucket");
+
     const cluster = new sst.aws.Cluster("MyCluster", { vpc });
 
-    cluster.addService("MyService", {
-      link: [redis],
+    new sst.aws.Service("MyService", {
+      cluster,
+      link: [bucket],
       loadBalancer: {
         ports: [{ listen: "80/http", forward: "3000/http" }],
       },

@@ -9,10 +9,10 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/sst/ion/cmd/sst/mosaic/ui/common"
-	"github.com/sst/ion/pkg/bus"
-	"github.com/sst/ion/pkg/flag"
-	"github.com/sst/ion/pkg/process"
+	"github.com/sst/sst/v3/cmd/sst/mosaic/ui/common"
+	"github.com/sst/sst/v3/pkg/bus"
+	"github.com/sst/sst/v3/pkg/flag"
+	"github.com/sst/sst/v3/pkg/process"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -32,10 +32,11 @@ type RunOutputs struct {
 }
 
 func NewRun() *Run {
-	weight := int64(4)
-	if flag.SST_BUILD_CONCURRENCY != "" {
-		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY, 10, 64)
+	weight := int64(1)
+	if flag.SST_BUILD_CONCURRENCY_SITE != "" {
+		weight, _ = strconv.ParseInt(flag.SST_BUILD_CONCURRENCY_SITE, 10, 64)
 	}
+
 	return &Run{
 		lock: semaphore.NewWeighted(weight),
 	}

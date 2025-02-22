@@ -5,13 +5,7 @@ import {
   all,
   Output,
 } from "@pulumi/pulumi";
-import { RandomId } from "@pulumi/random";
-import {
-  physicalName,
-  hashNumberToPrettyString,
-  hashStringToPrettyString,
-  logicalName,
-} from "../naming";
+import { hashStringToPrettyString, logicalName } from "../naming";
 import { Component, Prettify, Transform, transform } from "../component";
 import { Link } from "../link";
 import type { Input } from "../input";
@@ -24,6 +18,9 @@ import { iam, s3 } from "@pulumi/aws";
 import { permission } from "./permission";
 import { BucketQueueSubscriber } from "./bucket-queue-subscriber";
 import { BucketTopicSubscriber } from "./bucket-topic-subscriber";
+import { Queue } from "./queue";
+import { SnsTopic } from "./sns-topic";
+import { BucketNotification } from "./bucket-notification";
 
 interface BucketCorsArgs {
   /**
@@ -165,7 +162,7 @@ export interface BucketArgs {
    * Bucket versioning enables you to store multiple versions of an object, protecting
    * against accidental deletion or overwriting.
    *
-   * @default Versioning disabled
+   * @default `false`
    * @example
    * ```js
    * {
@@ -173,7 +170,7 @@ export interface BucketArgs {
    * }
    * ```
    */
-  versioning?: Input<true>;
+  versioning?: Input<boolean>;
   /**
    * [Transform](/docs/components#transform) how this component creates its underlying
    * resources.
@@ -204,6 +201,189 @@ export interface BucketArgs {
   };
 }
 
+export interface BucketNotificationsArgs {
+  /**
+   * A list of subscribers that'll be notified when events happen in the bucket.
+   */
+  notifications: Input<
+    Input<{
+      /**
+       * The name of the subscriber.
+       */
+      name: Input<string>;
+      /**
+       * The function that'll be notified.
+       *
+       * @example
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   function: "src/subscriber.handler"
+       * }
+       * ```
+       *
+       * Customize the subscriber function. The `link` ensures the subscriber can access the
+       * bucket through the [SDK](/docs/reference/sdk/).
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   function: {
+       *     handler: "src/subscriber.handler",
+       *     timeout: "60 seconds",
+       *     link: [bucket]
+       *   }
+       * }
+       * ```
+       *
+       * Or pass in the ARN of an existing Lambda function.
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   function: "arn:aws:lambda:us-east-1:123456789012:function:my-function"
+       * }
+       * ```
+       */
+      function?: Input<string | FunctionArgs | FunctionArn>;
+      /**
+       * The Queue that'll be notified.
+       *
+       * @example
+       * For example, let's say you have a queue.
+       *
+       * ```js title="sst.config.ts"
+       * const myQueue = new sst.aws.Queue("MyQueue");
+       * ```
+       *
+       * You can subscribe to this bucket with it.
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   queue: myQueue
+       * }
+       * ```
+       *
+       * Or pass in the ARN of an existing SQS queue.
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   queue: "arn:aws:sqs:us-east-1:123456789012:my-queue"
+       * }
+       * ```
+       */
+      queue?: Input<string | Queue>;
+      /**
+       * The SNS topic that'll be notified.
+       *
+       * @example
+       * For example, let's say you have a topic.
+       *
+       * ```js title="sst.config.ts"
+       * const myTopic = new sst.aws.SnsTopic("MyTopic");
+       * ```
+       *
+       * You can subscribe to this bucket with it.
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   topic: myTopic
+       * }
+       * ```
+       *
+       * Or pass in the ARN of an existing SNS topic.
+       *
+       * ```js
+       * {
+       *   name: "MySubscriber",
+       *   topic: "arn:aws:sns:us-east-1:123456789012:my-topic"
+       * }
+       * ```
+       */
+      topic?: Input<string | SnsTopic>;
+      /**
+       * A list of S3 event types that'll trigger a notification.
+       * @default All S3 events
+       * @example
+       * ```js
+       * {
+       *   events: ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+       * }
+       * ```
+       */
+      events?: Input<
+        Input<
+          | "s3:ObjectCreated:*"
+          | "s3:ObjectCreated:Put"
+          | "s3:ObjectCreated:Post"
+          | "s3:ObjectCreated:Copy"
+          | "s3:ObjectCreated:CompleteMultipartUpload"
+          | "s3:ObjectRemoved:*"
+          | "s3:ObjectRemoved:Delete"
+          | "s3:ObjectRemoved:DeleteMarkerCreated"
+          | "s3:ObjectRestore:*"
+          | "s3:ObjectRestore:Post"
+          | "s3:ObjectRestore:Completed"
+          | "s3:ObjectRestore:Delete"
+          | "s3:ReducedRedundancyLostObject"
+          | "s3:Replication:*"
+          | "s3:Replication:OperationFailedReplication"
+          | "s3:Replication:OperationMissedThreshold"
+          | "s3:Replication:OperationReplicatedAfterThreshold"
+          | "s3:Replication:OperationNotTracked"
+          | "s3:LifecycleExpiration:*"
+          | "s3:LifecycleExpiration:Delete"
+          | "s3:LifecycleExpiration:DeleteMarkerCreated"
+          | "s3:LifecycleTransition"
+          | "s3:IntelligentTiering"
+          | "s3:ObjectTagging:*"
+          | "s3:ObjectTagging:Put"
+          | "s3:ObjectTagging:Delete"
+          | "s3:ObjectAcl:Put"
+        >[]
+      >;
+      /**
+       * An S3 object key prefix that will trigger a notification.
+       * @example
+       * To be notified for all the objects in the `images/` folder.
+       * ```js
+       * {
+       *   filterPrefix: "images/"
+       * }
+       * ```
+       */
+      filterPrefix?: Input<string>;
+      /**
+       * An S3 object key suffix that will trigger the notification.
+       * @example
+       * To be notified for all the objects with the `.jpg` suffix.
+       * ```js
+       * {
+       *  filterSuffix: ".jpg"
+       * }
+       * ```
+       */
+      filterSuffix?: Input<string>;
+    }>[]
+  >;
+  /**
+   * [Transform](/docs/components#transform) how this notification creates its underlying
+   * resources.
+   */
+  transform?: {
+    /**
+     * Transform the S3 Bucket Notification resource.
+     */
+    notification?: Transform<s3.BucketNotificationArgs>;
+  };
+}
+
+/**
+ * @internal
+ */
 export interface BucketSubscriberArgs {
   /**
    * A list of S3 event types that'll trigger the notification.
@@ -380,49 +560,36 @@ export class Bucket extends Component implements Link.Linkable {
     }
 
     function createBucket() {
-      const transformed = transform(
-        args.transform?.bucket,
-        `${name}Bucket`,
-        {
-          forceDestroy: true,
-        },
-        { parent },
-      );
-
-      if (!transformed[1].bucket) {
-        const randomId = new RandomId(
-          `${name}Id`,
-          { byteLength: 6 },
-          { parent },
-        );
-        transformed[1].bucket = randomId.dec.apply((dec) =>
-          physicalName(
-            63,
-            name,
-            `-${hashNumberToPrettyString(parseInt(dec), 8)}`,
-          ).toLowerCase(),
-        );
-      }
-
-      return new s3.BucketV2(...transformed);
-    }
-
-    function createVersioning() {
-      if (!args.versioning) return;
-
-      return new s3.BucketVersioningV2(
+      return new s3.BucketV2(
         ...transform(
-          args.transform?.versioning,
-          `${name}Versioning`,
+          args.transform?.bucket,
+          `${name}Bucket`,
           {
-            bucket: bucket.bucket,
-            versioningConfiguration: {
-              status: "Enabled",
-            },
+            forceDestroy: true,
           },
           { parent },
         ),
       );
+    }
+
+    function createVersioning() {
+      return output(args.versioning).apply((versioning) => {
+        if (!versioning) return;
+
+        return new s3.BucketVersioningV2(
+          ...transform(
+            args.transform?.versioning,
+            `${name}Versioning`,
+            {
+              bucket: bucket.bucket,
+              versioningConfiguration: {
+                status: "Enabled",
+              },
+            },
+            { parent },
+          ),
+        );
+      });
     }
 
     function createPublicAccess() {
@@ -602,7 +769,119 @@ export class Bucket extends Component implements Link.Linkable {
   }
 
   /**
+   * Subscribe to event notifications from this bucket. You can subscribe to these
+   * notifications with a function, a queue, or a topic.
+   *
+   * @param args The config for the event notifications.
+   *
+   * @example
+   *
+   * For exmaple, to notify a function:
+   *
+   * ```js title="sst.config.ts" {5}
+   * bucket.notify({
+   *   notifications: [
+   *     {
+   *       name: "MySubscriber",
+   *       function: "src/subscriber.handler"
+   *     }
+   *   ]
+   * });
+   * ```
+   *
+   * Or let's say you have a queue.
+   *
+   * ```js title="sst.config.ts"
+   * const myQueue = new sst.aws.Queue("MyQueue");
+   * ```
+   *
+   * You can notify it by passing in the queue.
+   *
+   * ```js title="sst.config.ts" {5}
+   * bucket.notify({
+   *   notifications: [
+   *     {
+   *       name: "MySubscriber",
+   *       queue: myQueue
+   *     }
+   *   ]
+   * });
+   * ```
+   *
+   * Or let's say you have a topic.
+   *
+   * ```js title="sst.config.ts"
+   * const myTopic = new sst.aws.SnsTopic("MyTopic");
+   * ```
+   *
+   * You can notify it by passing in the topic.
+   *
+   * ```js title="sst.config.ts" {5}
+   * bucket.notify({
+   *   notifications: [
+   *     {
+   *       name: "MySubscriber",
+   *       topic: myTopic
+   *     }
+   *   ]
+   * });
+   * ```
+   *
+   * You can also set it to only send notifications for specific S3 events.
+   *
+   * ```js {6}
+   * bucket.notify({
+   *   notifications: [
+   *     {
+   *       name: "MySubscriber",
+   *       function: "src/subscriber.handler",
+   *       events: ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+   *     }
+   *   ]
+   * });
+   * ```
+   *
+   * And you can add filters to be only notified from specific files in the bucket.
+   *
+   * ```js {6}
+   * bucket.notify({
+   *   notifications: [
+   *     {
+   *       name: "MySubscriber",
+   *       function: "src/subscriber.handler",
+   *       filterPrefix: "images/"
+   *     }
+   *   ]
+   * });
+   * ```
+   */
+  public notify(args: BucketNotificationsArgs) {
+    if (this.isSubscribed) {
+      throw new VisibleError(
+        `Cannot call "notify" on the "${this.constructorName}" bucket multiple times. Calling it again will override previous notifications.`,
+      );
+    }
+    this.isSubscribed = true;
+    const name = this.constructorName;
+    const opts = this.constructorOpts;
+
+    return new BucketNotification(
+      `${name}Notifications`,
+      {
+        bucket: { name: this.bucket.bucket, arn: this.bucket.arn },
+        ...args,
+      },
+      opts,
+    );
+  }
+
+  /**
    * Subscribe to events from this bucket.
+   *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
    *
    * @param subscriber The function that'll be notified.
    * @param args Configure the subscription.
@@ -665,6 +944,11 @@ export class Bucket extends Component implements Link.Linkable {
 
   /**
    * Subscribe to events of an S3 bucket that was not created in your app.
+   *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
    *
    * @param bucketArn The ARN of the S3 bucket to subscribe to.
    * @param subscriber The function that'll be notified.
@@ -759,6 +1043,11 @@ export class Bucket extends Component implements Link.Linkable {
   /**
    * Subscribe to events from this bucket with an SQS Queue.
    *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
+   *
    * @param queueArn The ARN of the queue that'll be notified.
    * @param args Configure the subscription.
    *
@@ -767,7 +1056,7 @@ export class Bucket extends Component implements Link.Linkable {
    * For example, let's say you have a queue.
    *
    * ```js title="sst.config.ts"
-   * const queue = sst.aws.Queue("MyQueue");
+   * const queue = new sst.aws.Queue("MyQueue");
    * ```
    *
    * You can subscribe to this bucket with it.
@@ -810,6 +1099,11 @@ export class Bucket extends Component implements Link.Linkable {
 
   /**
    * Subscribe to events of an S3 bucket that was not created in your app with an SQS Queue.
+   *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
    *
    * @param bucketArn The ARN of the S3 bucket to subscribe to.
    * @param queueArn The ARN of the queue that'll be notified.
@@ -893,6 +1187,11 @@ export class Bucket extends Component implements Link.Linkable {
   /**
    * Subscribe to events from this bucket with an SNS Topic.
    *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
+   *
    * @param topicArn The ARN of the topic that'll be notified.
    * @param args Configure the subscription.
    *
@@ -901,7 +1200,7 @@ export class Bucket extends Component implements Link.Linkable {
    * For example, let's say you have a topic.
    *
    * ```js title="sst.config.ts"
-   * const topic = sst.aws.SnsTopic("MyTopic");
+   * const topic = new sst.aws.SnsTopic("MyTopic");
    * ```
    *
    * You can subscribe to this bucket with it.
@@ -944,6 +1243,11 @@ export class Bucket extends Component implements Link.Linkable {
 
   /**
    * Subscribe to events of an S3 bucket that was not created in your app with an SNS Topic.
+   *
+   * @deprecated The `notify` function is now the recommended way to subscribe to events
+   * from this bucket. It allows you to configure multiple subscribers at once. To migrate,
+   * remove the current subscriber, deploy the changes, and then add the subscriber
+   * back using the new `notify` function.
    *
    * @param bucketArn The ARN of the S3 bucket to subscribe to.
    * @param topicArn The ARN of the topic that'll be notified.

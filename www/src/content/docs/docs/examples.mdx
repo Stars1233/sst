@@ -5,6 +5,8 @@ description: A collection of example apps for reference.
 
 {/* DO NOT EDIT. AUTO-GENERATED FROM "examples/" */}
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import VideoAside from '../../../../src/components/VideoAside.astro';
 import Segment from '../../../../src/components/tsdoc/Segment.astro';
 import Section from '../../../../src/components/tsdoc/Section.astro';
 import NestedTitle from '../../../../src/components/tsdoc/NestedTitle.astro';
@@ -55,6 +57,66 @@ return {
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-apig-auth).
+
+
+---
+## AWS Astro container with Redis
+
+Creates a hit counter app with Astro and Redis.
+
+This deploys Astro as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:4321` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it by adding the `Dockerfile` that's included in this example and
+running `npx sst deploy --stage production`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "4321/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-astro-redis).
 
 
 ---
@@ -120,6 +182,343 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-astro-s
 
 
 ---
+## AWS Aurora local
+
+In this example, we connect to a locally running Postgres instance for dev. While
+on deploy, we use RDS Aurora.
+
+We use the [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/) CLI
+to start a local container with Postgres. You don't have to use Docker, you can use
+Postgres.app or any other way to run Postgres locally.
+
+```bash
+docker run \
+  --rm \
+  -p 5432:5432 \
+  -v $(pwd)/.sst/storage/postgres:/var/lib/postgresql/data \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=local \
+  postgres:16.4
+```
+
+The data is saved to the `.sst/storage` directory. So if you restart the dev server, the
+data will still be there.
+
+We then configure the `dev` property of the `Aurora` component with the settings for the
+local Postgres instance.
+
+```ts title="sst.config.ts"
+dev: {
+  username: "postgres",
+  password: "password",
+  database: "local",
+  port: 5432,
+}
+```
+
+By providing the `dev` prop for Postgres, SST will use the local Postgres instance and
+not deploy a new RDS database when running `sst dev`.
+
+It also allows us to access the database through a Resource `link` without having to
+conditionally check if we are running locally.
+
+```ts title="index.ts"
+const pool = new Pool({
+  host: Resource.MyPostgres.host,
+  port: Resource.MyPostgres.port,
+  user: Resource.MyPostgres.username,
+  password: Resource.MyPostgres.password,
+  database: Resource.MyPostgres.database,
+});
+```
+
+The above will work in both `sst dev` and `sst deploy`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { nat: "ec2" });
+
+const database = new sst.aws.Aurora("MyPostgres", {
+  engine: "postgres",
+  dev: {
+    username: "postgres",
+    password: "password",
+    database: "local",
+    host: "localhost",
+    port: 5432,
+  },
+  vpc,
+});
+
+new sst.aws.Function("MyFunction", {
+  vpc,
+  url: true,
+  link: [database],
+  handler: "index.handler",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-aurora-local).
+
+
+---
+## AWS Aurora MySQL
+
+In this example, we deploy a Aurora MySQL database.
+
+```ts title="sst.config.ts"
+const mysql = new sst.aws.Aurora("MyDatabase", {
+  engine: "mysql",
+  vpc,
+});
+```
+
+And link it to a Lambda function.
+
+```ts title="sst.config.ts" {4}
+new sst.aws.Function("MyApp", {
+  handler: "index.handler",
+  link: [mysql],
+  url: true,
+  vpc,
+});
+```
+
+Now in the function we can access the database.
+
+```ts title="index.ts"
+const connection = await mysql.createConnection({
+  database: Resource.MyDatabase.database,
+  host: Resource.MyDatabase.host,
+  port: Resource.MyDatabase.port,
+  user: Resource.MyDatabase.username,
+  password: Resource.MyDatabase.password,
+});
+```
+
+We also enable the `bastion` option for the VPC. This allows us to connect to the database
+from our local machine with the `sst tunnel` CLI.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+Now you can run `npx sst dev` and you can connect to the database from your local machine.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", {
+  nat: "ec2",
+  bastion: true,
+});
+const mysql = new sst.aws.Aurora("MyDatabase", {
+  engine: "mysql",
+  vpc,
+});
+new sst.aws.Function("MyApp", {
+  handler: "index.handler",
+  link: [mysql],
+  url: true,
+  vpc,
+});
+
+return {
+  host: mysql.host,
+  port: mysql.port,
+  username: mysql.username,
+  password: mysql.password,
+  database: mysql.database,
+};
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-aurora-mysql).
+
+
+---
+## AWS Aurora Postgres
+
+In this example, we deploy a Aurora Postgres database.
+
+```ts title="sst.config.ts"
+const postgres = new sst.aws.Aurora("MyDatabase", {
+  engine: "postgres",
+  vpc,
+});
+```
+
+And link it to a Lambda function.
+
+```ts title="sst.config.ts" {4}
+new sst.aws.Function("MyApp", {
+  handler: "index.handler",
+  link: [postgres],
+  url: true,
+  vpc,
+});
+```
+
+In the function we use the [`postgres`](https://www.npmjs.com/package/postgres) package.
+
+```ts title="index.ts"
+import postgres from "postgres";
+import { Resource } from "sst";
+
+const sql = postgres({
+  username: Resource.MyDatabase.username,
+  password: Resource.MyDatabase.password,
+  database: Resource.MyDatabase.database,
+  host: Resource.MyDatabase.host,
+  port: Resource.MyDatabase.port,
+});
+```
+
+We also enable the `bastion` option for the VPC. This allows us to connect to the database
+from our local machine with the `sst tunnel` CLI.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+Now you can run `npx sst dev` and you can connect to the database from your local machine.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", {
+  nat: "ec2",
+  bastion: true,
+});
+const postgres = new sst.aws.Aurora("MyDatabase", {
+  engine: "postgres",
+  vpc,
+});
+new sst.aws.Function("MyApp", {
+  handler: "index.handler",
+  link: [postgres],
+  url: true,
+  vpc,
+});
+
+return {
+  host: postgres.host,
+  port: postgres.port,
+  username: postgres.username,
+  password: postgres.password,
+  database: postgres.database,
+};
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-aurora-postgres).
+
+
+---
+## AWS OpenAuth React SPA
+
+This is a full-stack monorepo app shows the OpenAuth flow for a single-page app
+and an authenticated API. It has:
+
+- React SPA built with Vite and the `StaticSite` component in the `packages/web`
+  directory.
+  ```ts title="infra/web.ts"
+  export const web = new sst.aws.StaticSite("MyWeb", {
+    path: "packages/web",
+    build: {
+      output: "dist",
+      command: "npm run build",
+    },
+    environment: {
+      VITE_API_URL: api.url,
+      VITE_AUTH_URL: auth.url,
+    },
+  });
+  ```
+
+- API with Hono and the `Function` component in `packages/functions/src/api.ts`.
+  ```ts title="infra/api.ts"
+  export const api = new sst.aws.Function("MyApi", {
+    url: true,
+    link: [auth],
+    handler: "packages/functions/src/api.handler",
+  });
+  ```
+
+- OpenAuth with the `Auth` component in `packages/functions/src/auth.ts`.
+  ```ts title="infra/auth.ts"
+  export const auth = new sst.aws.Auth("MyAuth", {
+    issuer: "packages/functions/src/auth.handler",
+  });
+  ```
+
+The React frontend uses a `AuthContext` provider to manage the auth flow.
+
+```tsx title="packages/web/src/AuthContext.tsx"
+<AuthContext.Provider
+  value={{
+    login,
+    logout,
+    userId,
+    loaded,
+    loggedIn,
+    getToken,
+  }}
+>
+  {children}
+</AuthContext.Provider>
+```
+
+Now in `App.tsx`, we can use the `useAuth` hook.
+
+```tsx title="packages/web/src/App.tsx"
+const auth = useAuth();
+
+return !auth.loaded ? (
+  <div>Loading...</div>
+) : (
+  <div>
+    {auth.loggedIn ? (
+      <div>
+        <p>
+          <span>Logged in</span>
+          {auth.userId && <span> as {auth.userId}</span>}
+        </p>
+      </div>
+    ) : (
+      <button onClick={auth.login}>Login with OAuth</button>
+    )}
+  </div>
+);
+```
+
+Once authenticated, we can call our authenticated API by passing in the access
+token.
+
+```tsx title="packages/web/src/App.tsx" {3}
+await fetch(`${import.meta.env.VITE_API_URL}me`, {
+  headers: {
+    Authorization: `Bearer ${await auth.getToken()}`,
+  },
+});
+```
+
+The API uses the OpenAuth client to verify the token.
+
+```ts title="packages/functions/src/api.ts" {3}
+const authHeader = c.req.header("Authorization");
+const token = authHeader.split(" ")[1];
+const verified = await client.verify(subjects, token);
+```
+
+The `sst.config.ts` dynamically imports all the `infra/` files.
+```ts title="sst.config.ts"
+await import("./infra/auth");
+await import("./infra/api");
+await import("./infra/web");
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-auth-react).
+
+
+---
 ## Bucket policy
 
 Create an S3 bucket and transform its bucket policy.
@@ -158,8 +557,14 @@ const queue = new sst.aws.Queue("MyQueue");
 queue.subscribe("subscriber.handler");
 
 const bucket = new sst.aws.Bucket("MyBucket");
-bucket.subscribeQueue(queue.arn, {
-  events: ["s3:ObjectCreated:*"],
+bucket.notify({
+  notifications: [
+    {
+      name: "MySubscriber",
+      queue,
+      events: ["s3:ObjectCreated:*"],
+    },
+  ],
 });
 
 return {
@@ -177,8 +582,14 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-bucket-
 Create an S3 bucket and subscribe to its events with a function.
 ```ts title="sst.config.ts"
 const bucket = new sst.aws.Bucket("MyBucket");
-bucket.subscribe("subscriber.handler", {
-  events: ["s3:ObjectCreated:*"],
+bucket.notify({
+  notifications: [
+    {
+      name: "MySubscriber",
+      function: "subscriber.handler",
+      events: ["s3:ObjectCreated:*"],
+    },
+  ],
 });
 
 return {
@@ -195,11 +606,17 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-bucket-
 Create an S3 bucket and subscribe to its events with an SNS topic.
 ```ts title="sst.config.ts"
 const topic = new sst.aws.SnsTopic("MyTopic");
-topic.subscribe("subscriber.handler");
+topic.subscribe("MySubscriber", "subscriber.handler");
 
 const bucket = new sst.aws.Bucket("MyBucket");
-bucket.subscribeTopic(topic.arn, {
-  events: ["s3:ObjectCreated:*"],
+bucket.notify({
+  notifications: [
+    {
+      name: "MySubscriber",
+      topic,
+      events: ["s3:ObjectCreated:*"],
+    },
+  ],
 });
 
 return {
@@ -227,7 +644,8 @@ bunx sst init
 Now you can add a service.
 
 ```ts title="sst.config.ts"
-cluster.addService("MyService", {
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http", forward: "3000/http" }],
   },
@@ -256,7 +674,8 @@ const bucket = new sst.aws.Bucket("MyBucket");
 const vpc = new sst.aws.Vpc("MyVpc");
 
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-cluster.addService("MyService", {
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http", forward: "3000/http" }],
   },
@@ -271,63 +690,75 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-bun-ely
 
 
 ---
-## AWS Bun file upload
+## AWS Bun Redis
 
-Deploys an Bun app to AWS.
+Creates a hit counter app with Bun and Redis.
 
-You can get started by running.
+This deploys Bun as a Fargate service to ECS and it's linked to Redis.
 
-```bash
-mkdir aws-bun-file-upload && cd aws-bun-file-upload
-bun init -y
-bunx sst init
-```
-
-Now you can add a service.
-
-```ts title="sst.config.ts"
-cluster.addService("MyService", {
+```ts title="sst.config.ts" {9}
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http", forward: "3000/http" }],
   },
   dev: {
     command: "bun dev",
   },
-  link: [bucket],
+  link: [redis],
 });
 ```
 
-Start your app locally.
+We also have a couple of scripts. A `dev` script with a watcher and a `build` script
+that used when we deploy to production.
+
+```json title="package.json"
+{
+  "scripts": {
+    "dev": "bun run --watch index.ts",
+    "build": "bun build --target bun index.ts"
+  },
+}
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo bun sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
 
 ```bash
 bun sst dev
 ```
 
-This example lets you upload a file to S3 and then download it.
+Now if you go to `http://localhost:3000` you’ll see a counter update as you refresh the page.
 
-```bash
-curl -F file=@package.json http://localhost:3000/
-curl http://localhost:3000/latest
-```
-
-Finally, you can deploy it using `bun sst deploy --stage production`.
+Finally, you can deploy it using `bun sst deploy --stage production` using a `Dockerfile`
+that's included in the example.
 ```ts title="sst.config.ts"
-const bucket = new sst.aws.Bucket("MyBucket");
-const vpc = new sst.aws.Vpc("MyVpc");
-
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-cluster.addService("MyService", {
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
   loadBalancer: {
     ports: [{ listen: "80/http", forward: "3000/http" }],
   },
   dev: {
     command: "bun dev",
   },
-  link: [bucket],
 });
 ```
 
-View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-bun-file-upload).
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-bun-redis).
 
 
 ---
@@ -341,7 +772,8 @@ This allows you to create internal services that can only be accessed inside a V
 const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
 
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-cluster.addService("MyService", {
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     public: false,
     ports: [{ listen: "80/http" }],
@@ -350,6 +782,29 @@ cluster.addService("MyService", {
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-cluster-internal).
+
+
+---
+## AWS Cluster Spot capacity
+
+This example, shows how to use the Fargate Spot capacity provider for your services.
+
+We have it set to use only Fargate Spot instances for all non-production stages. Learn more
+about the [`capacity`](/docs/component/aws/cluster#capacity) prop.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc");
+
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+new sst.aws.Service("MyService", {
+  cluster,
+  loadBalancer: {
+    ports: [{ listen: "80/http" }],
+  },
+  capacity: $app.stage === "production" ? undefined : "spot",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-cluster-spot).
 
 
 ---
@@ -362,8 +817,9 @@ works out a lot cheaper for services that don't get a lot of traffic.
 
 You need to specify which port in your service will be exposed through API Gateway.
 
-```ts title="sst.config.ts" {3}
-const service = cluster.addService("MyService", {
+```ts title="sst.config.ts" {4}
+const service = new sst.aws.Service("MyService", {
+  cluster,
   serviceRegistry: {
     port: 80,
   },
@@ -374,7 +830,8 @@ Your API Gateway HTTP API also needs to be in the same VPC as the service.
 ```ts title="sst.config.ts"
 const vpc = new sst.aws.Vpc("MyVpc");
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-const service = cluster.addService("MyService", {
+const service = new sst.aws.Service("MyService", {
+  cluster,
   serviceRegistry: {
     port: 80,
   },
@@ -419,6 +876,66 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-dead-le
 
 
 ---
+## AWS Deno Redis
+
+Creates a hit counter app with Deno and Redis.
+
+This deploys Deno as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "8000/http" }],
+  },
+  dev: {
+    command: "deno task dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+sst dev
+```
+
+Now if you go to `http://localhost:8000` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it using `sst deploy --stage production` using a `Dockerfile`
+that's included in the example.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "8000/http" }],
+  },
+  dev: {
+    command: "deno task dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-deno-redis).
+
+
+---
 ## DynamoDB streams
 
 Create a DynamoDB table, enable streams, and subscribe to it with a function.
@@ -430,7 +947,7 @@ const table = new sst.aws.Dynamo("MyTable", {
   primaryIndex: { hashKey: "id" },
   stream: "new-and-old-images",
 });
-table.subscribe("subscriber.handler", {
+table.subscribe("MySubscriber", "subscriber.handler", {
   filters: [
     {
       dynamodb: {
@@ -559,7 +1076,8 @@ We use the SurrealDB docker image to run a server in a container and use EFS as 
 system.
 
 ```ts title="sst.config.ts"
-const server = cluster.addService("MyService", {
+const server = new sst.aws.Service("MyService", {
+  cluster,
   architecture: "arm64",
   image: "surrealdb/surrealdb:v2.0.2",
   // ...
@@ -606,7 +1124,8 @@ const efs = new sst.aws.Efs("MyEfs", { vpc });
 
 // Run SurrealDB server in a container
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-const server = cluster.addService("MyService", {
+const server = new sst.aws.Service("MyService", {
+  cluster,
   architecture: "arm64",
   image: "surrealdb/surrealdb:v2.0.2",
   command: [
@@ -622,9 +1141,7 @@ const server = cluster.addService("MyService", {
     "surrealkv://data/data.skv",
     "--allow-scripting",
   ],
-  volumes: [
-    { efs, path: "/data" },
-  ],
+  volumes: [{ efs, path: "/data" }],
 });
 
 // Lambda client to connect to SurrealDB
@@ -683,7 +1200,8 @@ new sst.aws.Function("MyFunction", {
 
 // Create a service that increments the same counter
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-cluster.addService("MyService", {
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http" }],
   },
@@ -700,63 +1218,63 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-efs).
 
 
 ---
-## AWS Express file upload
+## AWS Express Redis
 
-Deploys an Express app to AWS.
+Creates a hit counter app with Express and Redis.
 
-You can get started by running.
+This deploys Express as a Fargate service to ECS and it's linked to Redis.
 
-```bash
-mkdir aws-express-file-upload && cd aws-express-file-upload
-npm init -y
-npm install express
-npx sst@latest init
-```
-
-Now you can add a service.
-
-```ts title="sst.config.ts"
-cluster.addService("MyService", {
-  loadBalancer: {
-    ports: [{ listen: "80/http", forward: "3000/http" }],
-  },
-  dev: {
-    command: "node --watch index.mjs",
-  },
-});
-```
-
-Start your app locally.
-
-```bash
-npx sst dev
-```
-
-This example lets you upload a file to S3 and then download it.
-
-```bash
-curl -F file=@package.json http://localhost:80/
-curl http://localhost:80/latest
-```
-
-Finally, you can deploy it using `npx sst deploy --stage production`.
-```ts title="sst.config.ts"
-const bucket = new sst.aws.Bucket("MyBucket");
-const vpc = new sst.aws.Vpc("MyVpc");
-
-const cluster = new sst.aws.Cluster("MyCluster", { vpc });
-cluster.addService("MyService", {
+```ts title="sst.config.ts" {9}
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http" }],
   },
   dev: {
     command: "node --watch index.mjs",
   },
-  link: [bucket],
+  link: [redis],
 });
 ```
 
-View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-express-file-upload).
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:80` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it using `npx sst deploy --stage production` using a `Dockerfile`
+that's included in the example.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http" }],
+  },
+  dev: {
+    command: "node --watch index.mjs",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-express-redis).
 
 
 ---
@@ -808,6 +1326,239 @@ return {
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-ffmpeg).
+
+
+---
+## AWS ApiGatewayV2 Go
+
+Uses [aws-lambda-go-api-proxy](https://github.com/awslabs/aws-lambda-go-api-proxy/tree/master) to allow you to run a Go API with API Gateway V2.
+
+:::tip
+We use the `aws-lambda-go-api-proxy` package to handle the API Gateway V2 event.
+:::
+
+So you write your Go function as you normally would and then use the package to handle the API Gateway V2 event.
+
+```go title="main.go"
+import (
+ "github.com/aws/aws-lambda-go/lambda"
+ "github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
+)
+
+func router() *http.ServeMux {
+  mux := http.NewServeMux()
+
+  mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(`{"message": "hello world"}`))
+  })
+
+  return mux
+}
+
+func main() {
+  lambda.Start(httpadapter.NewV2(router()).ProxyWithContext)
+}
+```
+```ts title="sst.config.ts"
+const api = new sst.aws.ApiGatewayV2("GoApi");
+
+api.route("$default", {
+  handler: "src/",
+  runtime: "go",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-go-api-gateway-v2).
+
+
+---
+## AWS Lambda Go S3 Presigned
+
+Generates a presigned URL for the linked S3 bucket in a Go Lambda function.
+
+Configure the S3 Client and the PresignedClient.
+
+```go title="main.go"
+cfg, err := config.LoadDefaultConfig(context.TODO())
+if err != nil {
+   panic(err)
+}
+
+client := s3.NewFromConfig(cfg)
+presignedClient := s3.NewPresignClient(client)
+```
+
+Generate the presigned URL.
+
+```go title="main.go"
+bucketName, err := resource.Get("Bucket", "name")
+if err != nil {
+  panic(err)
+}
+url, err := presignedClient.PresignPutObject(context.TODO(), &s3.PutObjectInput{
+  Bucket: aws.String(bucket.(string)),
+  Key:    aws.String(key),
+})
+```
+```ts title="sst.config.ts"
+const bucket = new sst.aws.Bucket("Bucket");
+
+const api = new sst.aws.ApiGatewayV2("Api");
+
+api.route("GET /upload-url", {
+  handler: "src/",
+  runtime: "go",
+  link: [bucket],
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-go-lambda-bucket-presigned-url).
+
+
+---
+## AWS Lambda Go DynamoDB
+
+An example on how to use a Go runtime Lambda with DynamoDB.
+
+You configure the DynamoDB client.
+
+```go title="src/main.go"
+import (
+  "github.com/sst/sst/v3/sdk/golang/resource"
+)
+
+func main() {
+  cfg, err := config.LoadDefaultConfig(context.Background())
+ if err != nil {
+   panic(err)
+ }
+ client := dynamodb.NewFromConfig(cfg)
+
+
+ tableName, err := resource.Get("Table", "name")
+ if err != nil {
+   panic(err)
+ }
+}
+```
+
+And make a request to DynamoDB.
+
+```go title="src/main.go"
+_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
+  TableName: tableName.(string),
+	 Item:      item,
+})
+```
+```ts title="sst.config.ts"
+const table = new sst.aws.Dynamo("Table", {
+  fields: {
+    PK: "string",
+    SK: "string",
+  },
+  primaryIndex: { hashKey: "PK", rangeKey: "SK" },
+});
+
+new sst.aws.Function("GoFunction", {
+  url: true,
+  runtime: "go",
+  handler: "./src",
+  link: [table],
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-go-lambda-dynamo).
+
+
+---
+## AWS Hono container with Redis
+
+Creates a hit counter app with Hono and Redis.
+
+This deploys Hono API as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {2}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:3000` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it by:
+
+1. Using the `Dockerfile` that's included in this example.
+
+2. This compiles our TypeScript file, so we'll need add the following to the `tsconfig.json`.
+
+   ```diff lang="json" title="tsconfig.json" {4,6}
+   {
+     "compilerOptions": {
+       // ...
+   +    "outDir": "./dist"
+     },
+   +  "exclude": ["node_modules"]
+   }
+   ```
+
+3. Install TypeScript.
+
+   ```bash
+   npm install typescript --save-dev
+   ```
+
+3. And add a `build` script to our `package.json`.
+
+   ```diff lang="json" title="package.json"
+   "scripts": {
+     // ...
+   +  "build": "tsc"
+   }
+   ```
+And finally, running `npx sst deploy --stage production`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-hono-redis).
 
 
 ---
@@ -987,10 +1738,10 @@ Create a Kinesis stream, and subscribe to it with a function.
 const stream = new sst.aws.KinesisStream("MyStream");
 
 // Create a function subscribing to all events
-stream.subscribe("subscriber.all");
+stream.subscribe("AllSub", "subscriber.all");
 
 // Create a function subscribing to events of `bar` type
-stream.subscribe("subscriber.filtered", {
+stream.subscribe("FilteredSub", "subscriber.filtered", {
   filters: [
     {
       data: {
@@ -1013,6 +1764,273 @@ return {
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-kinesis-stream).
+
+
+---
+## AWS Lambda Go
+
+This example shows how to use the [`go`](https://golang.org/) runtime in your Lambda
+functions.
+
+Our Go function is in the `src` directory and we point to it in our function.
+
+```ts title="sst.config.ts" {5}
+new sst.aws.Function("MyFunction", {
+  url: true,
+  runtime: "go",
+  link: [bucket],
+  handler: "./src",
+});
+```
+
+We are also linking it to an S3 bucket. We can reference the bucket in our function.
+
+```go title="src/main.go" {2}
+func handler() (string, error) {
+  bucket, err := resource.Get("MyBucket", "name")
+  if err != nil {
+    return "", err
+  }
+  return bucket.(string), nil
+}
+```
+
+The `resource.Get` function is from the SST Go SDK.
+
+```go title="src/main.go" {2}
+import (
+  "github.com/sst/sst/v3/sdk/golang/resource"
+)
+```
+
+The `sst dev` CLI also supports running your Go function [_Live_](/docs/live).
+```ts title="sst.config.ts"
+const bucket = new sst.aws.Bucket("MyBucket");
+
+new sst.aws.Function("MyFunction", {
+  url: true,
+  runtime: "go",
+  link: [bucket],
+  handler: "./src",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-lambda-golang).
+
+
+---
+## AWS Lambda retry with queues
+
+An example on how to retry Lambda invocations using SQS queues.
+
+Create a SQS retry queue which will be set as the destination for the Lambda function.
+
+```ts title="src/retry.ts"
+const retryQueue = new sst.aws.Queue("retryQueue");
+
+const bus = new sst.aws.Bus("bus");
+
+const busSubscriber = bus.subscribe("busSubscriber", {
+  handler: "src/bus-subscriber.handler",
+  environment: {
+    RETRIES: "2", // set the number of retries
+  },
+  link: [retryQueue], // so the function can send messages to the retry queue
+});
+
+new aws.lambda.FunctionEventInvokeConfig("eventConfig", {
+  functionName: $resolve([busSubscriber.nodes.function.name]).apply(
+    ([name]) => name,
+  ),
+  maximumRetryAttempts: 2, // default is 2, must be between 0 and 2
+  destinationConfig: {
+    onFailure: {
+      destination: retryQueue.arn,
+    },
+  },
+});
+```
+
+Create a bus subscriber which will publish messages to the bus. Include a DLQ for messages that continue to fail.
+
+```ts title="sst.config.ts"
+
+const dlq = new sst.aws.Queue("dlq");
+
+retryQueue.subscribe({
+  handler: "src/retry.handler",
+  link: [busSubscriber.nodes.function, retryQueue, dlq],
+  timeout: "30 seconds",
+  environment: {
+    RETRIER_QUEUE_URL: retryQueue.url,
+  },
+  permissions: [
+    {
+      actions: ["lambda:GetFunction", "lambda:InvokeFunction"],
+      resources: [
+        $interpolate`arn:aws:lambda:${aws.getRegionOutput().name}:${
+          aws.getCallerIdentityOutput().accountId
+        }:function:*`,
+      ],
+    },
+  ],
+  transform: {
+    function: {
+      deadLetterConfig: {
+        targetArn: dlq.arn,
+      },
+    },
+  },
+});
+```
+
+
+The Retry function will read mesaages and send back to the queue to be retried with a backoff.
+
+```ts title="src/retry.ts"
+export const handler: SQSHandler = async (evt) => {
+  for (const record of evt.Records) {
+    const parsed = JSON.parse(record.body);
+    console.log("body", parsed);
+    const functionName = parsed.requestContext.functionArn
+      .replace(":$LATEST", "")
+      .split(":")
+      .pop();
+    if (parsed.responsePayload) {
+      const attempt = (parsed.requestPayload.attempts || 0) + 1;
+
+      const info = await lambda.send(
+        new GetFunctionCommand({
+          FunctionName: functionName,
+        }),
+      );
+      const max =
+        Number.parseInt(
+          info.Configuration?.Environment?.Variables?.RETRIES || "",
+        ) || 0;
+      console.log("max retries", max);
+      if (attempt > max) {
+        console.log(`giving up after ${attempt} retries`);
+        // send to dlq
+        await sqs.send(
+          new SendMessageCommand({
+            QueueUrl: Resource.dlq.url,
+            MessageBody: JSON.stringify({
+              requestPayload: parsed.requestPayload,
+              requestContext: parsed.requestContext,
+              responsePayload: parsed.responsePayload,
+            }),
+          }),
+        );
+        return;
+      }
+      const seconds = Math.min(Math.pow(2, attempt), 900);
+      console.log(
+        "delaying retry by ",
+        seconds,
+        "seconds for attempt",
+        attempt,
+      );
+      parsed.requestPayload.attempts = attempt;
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: Resource.retryQueue.url,
+          DelaySeconds: seconds,
+          MessageBody: JSON.stringify({
+            requestPayload: parsed.requestPayload,
+            requestContext: parsed.requestContext,
+          }),
+        }),
+      );
+    }
+
+    if (!parsed.responsePayload) {
+      console.log("triggering function");
+      try {
+        await lambda.send(
+          new InvokeCommand({
+            InvocationType: "Event",
+            Payload: Buffer.from(JSON.stringify(parsed.requestPayload)),
+            FunctionName: functionName,
+          }),
+        );
+      } catch (e) {
+        if (e instanceof ResourceNotFoundException) {
+          return;
+        }
+        throw e;
+      }
+    }
+  }
+};
+```
+```ts title="sst.config.ts"
+const dlq = new sst.aws.Queue("dlq");
+
+const retryQueue = new sst.aws.Queue("retryQueue");
+
+const bus = new sst.aws.Bus("bus");
+
+const busSubscriber = bus.subscribe("busSubscriber", {
+  handler: "src/bus-subscriber.handler",
+  environment: {
+    RETRIES: "2",
+  },
+  link: [retryQueue], // so the function can send messages to the queue
+});
+
+const publisher = new sst.aws.Function("publisher", {
+  handler: "src/publisher.handler",
+  link: [bus],
+  url: true,
+});
+
+new aws.lambda.FunctionEventInvokeConfig("eventConfig", {
+  functionName: $resolve([busSubscriber.nodes.function.name]).apply(
+    ([name]) => name,
+  ),
+  maximumRetryAttempts: 1,
+  destinationConfig: {
+    onFailure: {
+      destination: retryQueue.arn,
+    },
+  },
+});
+
+retryQueue.subscribe({
+  handler: "src/retry.handler",
+  link: [busSubscriber.nodes.function, retryQueue, dlq],
+  timeout: "30 seconds",
+  environment: {
+    RETRIER_QUEUE_URL: retryQueue.url,
+  },
+  permissions: [
+    {
+      actions: ["lambda:GetFunction", "lambda:InvokeFunction"],
+      resources: [
+        $interpolate`arn:aws:lambda:${aws.getRegionOutput().name}:${
+          aws.getCallerIdentityOutput().accountId
+        }:function:*`,
+      ],
+    },
+  ],
+  transform: {
+    function: {
+      deadLetterConfig: {
+        targetArn: dlq.arn,
+      },
+    },
+  },
+});
+
+return {
+  publisher: publisher.url,
+  dlq: dlq.url,
+  retryQueue: retryQueue.url,
+};
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-lambda-retry-with-queues).
 
 
 ---
@@ -1188,6 +2206,73 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-multi-r
 
 
 ---
+## AWS NestJS with Redis
+
+Creates a hit counter app with NestJS and Redis.
+
+:::note
+You need Node 22.12 or higher for this example to work.
+:::
+
+Also make sure you have Node 22.12. Or set the `--experimental-require-module` flag.
+This'll allow NestJS to import the SST SDK.
+
+This deploys NestJS as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run start:dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:3000` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it using `npx sst deploy --stage production` using a `Dockerfile`
+that's included in the example.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc('MyVpc', { bastion: true });
+const redis = new sst.aws.Redis('MyRedis', { vpc });
+const cluster = new sst.aws.Cluster('MyCluster', { vpc });
+
+new sst.aws.Service('MyService', {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: '80/http', forward: '3000/http' }],
+  },
+  dev: {
+    command: 'npm run start:dev',
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-nestjs-redis).
+
+
+---
 ## AWS Next.js add behavior
 
 Here's how to add additional routes or cache behaviors to the CDN of a Next.js app deployed
@@ -1330,6 +2415,69 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-nextjs-
 
 
 ---
+## AWS Next.js container with Redis
+
+Creates a hit counter app with Next.js and Redis.
+
+This deploys Next.js as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:3000` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it by:
+
+1. Setting `output: "standalone"` in your `next.config.mjs` file.
+2. Adding a `Dockerfile` that's included in this example.
+3. Running `npx sst deploy --stage production`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-nextjs-redis).
+
+
+---
 ## AWS Next.js streaming
 
 An example of how to use streaming Next.js RSC. Uses `Suspense` to stream an async component.
@@ -1372,6 +2520,84 @@ new sst.aws.Nextjs("MyWeb");
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-nextjs-stream).
+
+
+---
+## AWS Postgres local
+
+In this example, we connect to a locally running Postgres instance for dev. While
+on deploy, we use RDS.
+
+We use the [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/) CLI
+to start a local container with Postgres. You don't have to use Docker, you can use
+Postgres.app or any other way to run Postgres locally.
+
+```bash
+docker run \
+  --rm \
+  -p 5432:5432 \
+  -v $(pwd)/.sst/storage/postgres:/var/lib/postgresql/data \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=local \
+  postgres:16.4
+```
+
+The data is saved to the `.sst/storage` directory. So if you restart the dev server, the
+data will still be there.
+
+We then configure the `dev` property of the `Postgres` component with the settings for the
+local Postgres instance.
+
+```ts title="sst.config.ts"
+dev: {
+  username: "postgres",
+  password: "password",
+  database: "local",
+  port: 5432,
+}
+```
+
+By providing the `dev` prop for Postgres, SST will use the local Postgres instance and
+not deploy a new RDS database when running `sst dev`.
+
+It also allows us to access the database through a Resource `link` without having to
+conditionally check if we are running locally.
+
+```ts title="index.ts"
+const pool = new Pool({
+  host: Resource.MyPostgres.host,
+  port: Resource.MyPostgres.port,
+  user: Resource.MyPostgres.username,
+  password: Resource.MyPostgres.password,
+  database: Resource.MyPostgres.database,
+});
+```
+
+The above will work in both `sst dev` and `sst deploy`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { nat: "ec2" });
+
+const rds = new sst.aws.Postgres("MyPostgres", {
+  dev: {
+    username: "postgres",
+    password: "password",
+    database: "local",
+    host: "localhost",
+    port: 5432,
+  },
+  vpc,
+});
+
+new sst.aws.Function("MyFunction", {
+  vpc,
+  url: true,
+  link: [rds],
+  handler: "index.handler",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-postgres-local).
 
 
 ---
@@ -1588,6 +2814,147 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-queue).
 
 
 ---
+## AWS Redis local
+
+In this example, we connect to a local Docker Redis instance for dev. While on deploy, we use
+Redis ElastiCache.
+
+We use the [`docker run`](https://docs.docker.com/reference/cli/docker/container/run/) CLI
+to start a local Redis server. You don't have to use Docker, you can run it locally any way
+you want.
+
+```bash
+docker run \
+  --rm \
+  -p 6379:6379 \
+  -v $(pwd)/.sst/storage/redis:/data \
+  redis:latest
+```
+
+The data is persisted to the `.sst/storage` directory. So if you restart the dev server,
+the data will still be there.
+
+We then configure the `dev` property of the `Redis` component with the settings for the
+local Redis server.
+
+```ts title="sst.config.ts"
+dev: {
+  host: "localhost",
+  port: 6379
+}
+```
+
+By providing the `dev` prop for Redis, SST will use the local Redis server and
+not deploy a new Redis ElastiCache cluster when running `sst dev`.
+
+It also allows us to access Redis through a Reosurce `link`.
+
+```ts title="index.ts"
+const client = Resource.MyRedis.host === "localhost"
+  ? new Redis({
+      host: Resource.MyRedis.host,
+      port: Resource.MyRedis.port,
+    })
+  : new Cluster(
+      [{ 
+        host: Resource.MyRedis.host,
+        port: Resource.MyRedis.port,
+      }],
+      {
+        redisOptions: {
+          tls: { checkServerIdentity: () => undefined },
+          username: Resource.MyRedis.username,
+          password: Resource.MyRedis.password,
+        },
+      },
+    );
+```
+
+The local Redis server is running in `standalone` mode, whereas on deploy it'll be in
+`cluster` mode. So our Lambda function needs to connect using the right config.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { nat: "managed" });
+
+const redis = new sst.aws.Redis("MyRedis", {
+  dev: {
+    host: "localhost",
+    port: 6379,
+  },
+  vpc,
+});
+
+new sst.aws.Function("MyApp", {
+  vpc,
+  url: true,
+  link: [redis],
+  handler: "index.handler",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-redis-local).
+
+
+---
+## AWS Remix container with Redis
+
+Creates a hit counter app with Remix and Redis.
+
+This deploys Remix as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:5173` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it by adding the `Dockerfile` that's included in this example and
+running `npx sst deploy --stage production`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-remix-redis).
+
+
+---
 ## AWS Remix streaming
 
 Follows the [Remix Streaming](https://remix.run/docs/en/main/guides/streaming) guide to create
@@ -1695,6 +3062,38 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-router)
 
 
 ---
+## AWS Cluster Service Discovery
+
+In this example, we are connecting to a service running on a cluster using its AWS Cloud
+Map service host name. This is useful for service discovery.
+
+We are deploying a service to a cluster in a VPC. And we can access it within the VPC using
+the service's cloud map hostname.
+
+```ts title="lambda.ts"
+const reponse = await fetch(`http://${Resource.MyService.service}`);
+```
+
+Here we are accessing it through a Lambda function that's linked to the service and is
+deployed to the same VPC.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { nat: "ec2" });
+
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+const service = new sst.aws.Service("MyService", { cluster });
+
+new sst.aws.Function("MyFunction", {
+  vpc,
+  url: true,
+  link: [service],
+  handler: "lambda.handler",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-service-discovery).
+
+
+---
 ## Sharp in Lambda
 
 Uses the [Sharp](https://sharp.pixelplumbing.com/) library to resize images. In this example,
@@ -1770,7 +3169,8 @@ Once deployed you can test the `/ws` endpoint and it'll send a message back afte
 const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
 const cluster = new sst.aws.Cluster("MyCluster", { vpc });
 
-cluster.addService("MyService", {
+new sst.aws.Service("MyService", {
+  cluster,
   loadBalancer: {
     ports: [{ listen: "80/http", forward: "3000/http" }],
   },
@@ -1870,6 +3270,66 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-static-
 
 
 ---
+## AWS SvelteKit container with Redis
+
+Creates a hit counter app with SvelteKit and Redis.
+
+This deploys SvelteKit as a Fargate service to ECS and it's linked to Redis.
+
+```ts title="sst.config.ts" {3}
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+Since our Redis cluster is in a VPC, we’ll need a tunnel to connect to it from our local
+machine.
+
+```bash "sudo"
+sudo npx sst tunnel install
+```
+
+This needs _sudo_ to create a network interface on your machine. You’ll only need to do this
+once on your machine.
+
+To start your app locally run.
+
+```bash
+npx sst dev
+```
+
+Now if you go to `http://localhost:5173` you’ll see a counter update as you refresh the page.
+
+Finally, you can deploy it by adding the `Dockerfile` that's included in this example and
+running `npx sst deploy --stage production`.
+```ts title="sst.config.ts"
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true });
+const redis = new sst.aws.Redis("MyRedis", { vpc });
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [redis],
+  loadBalancer: {
+    ports: [{ listen: "80/http", forward: "3000/http" }],
+  },
+  dev: {
+    command: "npm run dev",
+  },
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-svelte-redis).
+
+
+---
 ## Swift in Lambda
 
 Deploys a simple Swift application to Lambda using the `al2023` runtime.
@@ -1904,72 +3364,86 @@ View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-swift).
 ---
 ## T3 Stack in AWS
 
-Deploy [T3 stack](https://create.t3.gg) with Drizzle and Postgres to AWS. To use this
-example run:
-
-```bash
-npm install
-npm run db:push
-npx sst dev
-```
-
-And deploy it to production with.
-
-```bash
-npx sst deploy --stage production
-```
+Deploy [T3 stack](https://create.t3.gg) with Drizzle and Postgres to AWS.
 
 This example was created using `create-t3-app` and the following options: tRPC, Drizzle,
-no auth, Tailwind, Postgres, and the App Router
+no auth, Tailwind, Postgres, and the App Router.
 
-Instead of a local database, we'll be using an RDS Postgres database and connect to it
-with the RDS Data API.
+Instead of a local database, we'll be using an RDS Postgres database.
 
-```ts title="src/server/db/index.ts"
-import { Resource } from "sst";
-import { drizzle } from "drizzle-orm/aws-data-api/pg";
-import { RDSDataClient } from "@aws-sdk/client-rds-data";
-
-import * as schema from "./schema";
-
-const client = new RDSDataClient({});
-
-export const db = drizzle(client, {
-  schema,
+```ts title="src/server/db/index.ts" {2-6}
+const pool = new Pool({
+  host: Resource.MyPostgres.host,
+  port: Resource.MyPostgres.port,
+  user: Resource.MyPostgres.username,
+  password: Resource.MyPostgres.password,
   database: Resource.MyPostgres.database,
-  secretArn: Resource.MyPostgres.secretArn,
-  resourceArn: Resource.MyPostgres.clusterArn,
 });
+```
+
+Similarly, for Drizzle Kit.
+
+```ts title="drizzle.config.ts" {8-12}
+export default {
+  schema: "./src/server/db/schema.ts",
+  dialect: "postgresql",
+  dbCredentials: {
+    ssl: {
+      rejectUnauthorized: false,
+    },
+    host: Resource.MyPostgres.host,
+    port: Resource.MyPostgres.port,
+    user: Resource.MyPostgres.username,
+    password: Resource.MyPostgres.password,
+    database: Resource.MyPostgres.database,
+  },
+  tablesFilter: ["aws-t3_*"],
+} satisfies Config;
 ```
 
 In our Next.js app we can access our Postgres database because we [link them](/docs/linking/)
 both. We don't need to use our `.env` files.
 
-```ts title="sst.config.ts" {4}
- const rds = new sst.aws.Postgres("MyPostgres", { vpc });
+```ts title="sst.config.ts" {5}
+ const rds = new sst.aws.Postgres("MyPostgres", { vpc, proxy: true });
 
  new sst.aws.Nextjs("MyWeb", {
+   vpc,
    link: [rds]
  });
 ```
 
-For Drizzle Kit, we use the `aws-data-api` driver.
+To run this in dev mode run:
 
-```ts title="drizzle.config.ts" {5}
-import { Resource } from "sst";
-import { type Config } from "drizzle-kit";
+```bash
+npm install
+npx sst dev
+```
 
-export default {
-  driver: "aws-data-api",
-  schema: "./src/server/db/schema.ts",
-  dialect: "postgresql",
-  dbCredentials: {
-    database: Resource.MyPostgres.database,
-    secretArn: Resource.MyPostgres.secretArn,
-    resourceArn: Resource.MyPostgres.clusterArn,
+It'll take a few minutes to deploy the database and the VPC.
+
+This also starts a tunnel to let your local machine connect to the RDS Postgres database.
+Make sure you have it installed, you only need to do this once for your local machine.
+
+```bash
+sudo npx sst tunnel install
+```
+
+Now in a new terminal you can run the database migrations.
+
+```bash
+npm run db:push
+```
+
+We also have the Drizzle Studio start automatically in dev mode under the **Studio** tab.
+
+```ts title="sst.config.ts"
+new sst.x.DevCommand("Studio", {
+  link: [rds],
+  dev: {
+    command: "npx drizzle-kit studio",
   },
-  tablesFilter: ["aws-t3_*"],
-} satisfies Config;
+});
 ```
 
 And to make sure our credentials are available, we update our `package.json`
@@ -1983,16 +3457,155 @@ with the [`sst shell`](/docs/reference/cli) CLI.
 ```
 
 So running `npm run db:push` will run Drizzle Kit with the right credentials.
+
+To deploy this to production run:
+
+```bash
+npx sst deploy --stage production
+```
+
+Then run the migrations.
+
+```bash
+npx sst shell --stage production npx drizzle-kit push
+```
+
+If you are running this locally, you'll need to have a tunnel running.
+
+```bash
+npx sst tunnel --stage production
+```
+
+If you are doing this in a CI/CD pipeline, you'd want your build containers to be in the
+same VPC.
 ```ts title="sst.config.ts"
-const vpc = new sst.aws.Vpc("MyVpc");
-const rds = new sst.aws.Postgres("MyPostgres", { vpc });
+const vpc = new sst.aws.Vpc("MyVpc", { bastion: true, nat: "ec2" });
+const rds = new sst.aws.Postgres("MyPostgres", { vpc, proxy: true });
 
 new sst.aws.Nextjs("MyWeb", {
+  vpc,
   link: [rds]
+});
+
+new sst.x.DevCommand("Studio", {
+  link: [rds],
+  dev: {
+    command: "npx drizzle-kit studio",
+  },
 });
 ```
 
 View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-t3).
+
+
+---
+## AWS Task Cron
+
+Use the [`Task`](/docs/component/aws/task) and [`Cron`](/docs/component/aws/cron) components
+for long running background tasks.
+
+We have a node script that we want to run in `index.mjs`. It'll be deployed as a
+Docker container using `Dockerfile`.
+
+It'll be invoked by a cron job that runs every 2 minutes.
+
+```ts title="sst.config.ts"
+new sst.aws.Cron("MyCron", {
+  task,
+  schedule: "rate(2 minutes)"
+});
+```
+
+When this is run in `sst dev`, the task is executed locally using `dev.command`.
+
+```ts title="sst.config.ts"
+dev: {
+  command: "node index.mjs"
+}
+```
+
+To deploy, you need the Docker daemon running.
+```ts title="sst.config.ts"
+const bucket = new sst.aws.Bucket("MyBucket");
+const vpc = new sst.aws.Vpc("MyVpc");
+
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+const task = new sst.aws.Task("MyTask", {
+  cluster,
+  link: [bucket],
+  dev: {
+    command: "node index.mjs",
+  },
+});
+
+new sst.aws.Cron("MyCron", {
+  task,
+  schedule: "rate(2 minutes)",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-task-cron).
+
+
+---
+## AWS Task
+
+Use the [`Task`](/docs/component/aws/task) component to run background tasks.
+
+We have a node script that we want to run in `image/index.mjs`. It'll be deployed as a
+Docker container using `image/Dockerfile`.
+
+We also have a function that the task is linked to. It uses the [SDK](/docs/reference/sdk/)
+to start the task.
+
+```ts title="index.ts" {5}
+import { Resource } from "sst";
+import { task } from "sst/aws/task";
+
+export const handler = async () => {
+  const ret = await task.run(Resource.MyTask);
+  return {
+    statusCode: 200,
+    body: JSON.stringify(ret, null, 2),
+  };
+};
+```
+
+When this is run in `sst dev`, the task is executed locally using `dev.command`.
+
+```ts title="sst.config.ts"
+dev: {
+  command: "node index.mjs"
+}
+```
+
+To deploy, you need the Docker daemon running.
+```ts title="sst.config.ts"
+const bucket = new sst.aws.Bucket("MyBucket");
+const vpc = new sst.aws.Vpc("MyVpc", { nat: "ec2" });
+
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+const task = new sst.aws.Task("MyTask", {
+  cluster,
+  link: [bucket],
+  image: {
+    context: "image",
+  },
+  dev: {
+    command: "node index.mjs",
+  },
+});
+
+new sst.aws.Function("MyApp", {
+  vpc,
+  url: true,
+  link: [task],
+  handler: "index.handler",
+});
+```
+
+View the [full example](https://github.com/sst/sst/tree/dev/examples/aws-task).
 
 
 ---
@@ -2004,8 +3617,8 @@ const queue = new sst.aws.Queue("MyQueue");
 queue.subscribe("subscriber.handler");
 
 const topic = new sst.aws.SnsTopic("MyTopic");
-topic.subscribe("subscriber.handler", {});
-topic.subscribeQueue(queue.arn);
+topic.subscribe("MySubscriber1", "subscriber.handler", {});
+topic.subscribeQueue("MySubscriber2", queue.arn);
 
 const app = new sst.aws.Function("MyApp", {
   handler: "publisher.handler",

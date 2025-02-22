@@ -1,4 +1,4 @@
-import { ComponentResourceOptions, all, output } from "@pulumi/pulumi";
+import { ComponentResourceOptions, Output, all, output } from "@pulumi/pulumi";
 import { Component, Prettify, Transform, transform } from "../component";
 import { Input } from "../input";
 import { Link } from "../link";
@@ -173,6 +173,9 @@ export interface CognitoUserPoolArgs {
   /**
    * Configure the multi-factor authentication (MFA) settings for the User Pool.
    *
+   * If you enable MFA using `on` or `optional`, you need to configure either `sms` or
+   * `softwareToken` as well.
+   *
    * @default MFA is disabled.
    * @example
    *
@@ -233,9 +236,65 @@ export interface CognitoUserPoolArgs {
    */
   smsAuthenticationMessage?: Input<string>;
   /**
+   * Configure the verification message sent to users who are being authenticated.
+   */
+  verify?: Input<{
+    /**
+     * Subject line for Email messages sent to users who are being authenticated.
+     *
+     * @default `"Verify your new account"`
+     * @example
+     *
+     * ```ts
+     * {
+     *   verify: {
+     *     emailSubject: "Verify your new Awesome account"
+     *   }
+     * }
+     * ```
+     */
+    emailSubject?: Input<string>;
+    /**
+     * The template for email messages sent to users who are being authenticated.
+     *
+     * The template must include the `{####}` placeholder, which will be replaced with the
+     * verification code.
+     *
+     * @default `"The verification code to your new account is {####}"`
+     * @example
+     *
+     * ```ts
+     * {
+     *   verify: {
+     *     emailMessage: "The verification code to your new Awesome account is {####}"
+     *   }
+     * }
+     * ```
+     */
+    emailMessage?: Input<string>;
+    /**
+     * The template for SMS messages sent to users who are being authenticated.
+     *
+     * The template must include the `{####}` placeholder, which will be replaced with the
+     * verification code.
+     *
+     * @default `"The verification code to your new account is {####}"`
+     * @example
+     *
+     * ```ts
+     * {
+     *   verify: {
+     *     smsMessage: "The verification code to your new Awesome account is {####}"
+     *   }
+     * }
+     * ```
+     */
+    smsMessage?: Input<string>;
+  }>;
+  /**
    * Enable software token MFA for the User Pool.
    *
-   * @default Software token MFA is disabled.
+   * @default `false`
    * @example
    *
    * ```ts
@@ -244,7 +303,7 @@ export interface CognitoUserPoolArgs {
    * }
    * ```
    */
-  softwareToken?: Input<true>;
+  softwareToken?: Input<boolean>;
   /**
    * Configure triggers for this User Pool
    * @default No triggers
@@ -420,7 +479,7 @@ interface CognitoUserPoolRef {
  */
 export class CognitoUserPool extends Component implements Link.Linkable {
   private constructorOpts: ComponentResourceOptions;
-  private userPool: cognito.UserPool;
+  private userPool: Output<cognito.UserPool>;
 
   constructor(
     name: string,
@@ -432,7 +491,7 @@ export class CognitoUserPool extends Component implements Link.Linkable {
     if (args && "ref" in args) {
       const ref = args as unknown as CognitoUserPoolRef;
       this.constructorOpts = opts;
-      this.userPool = ref.userPool;
+      this.userPool = output(ref.userPool);
       return;
     }
 
@@ -440,6 +499,7 @@ export class CognitoUserPool extends Component implements Link.Linkable {
 
     normalizeAliasesAndUsernames();
     const triggers = normalizeTriggers();
+    const verify = normalizeVerify();
     const userPool = createUserPool();
 
     this.constructorOpts = opts;
@@ -474,146 +534,160 @@ export class CognitoUserPool extends Component implements Link.Linkable {
       });
     }
 
+    function normalizeVerify() {
+      if (!args.verify) return;
+
+      return output(args.verify).apply((verify) => {
+        return {
+          defaultEmailOption: "CONFIRM_WITH_CODE",
+          emailMessage:
+            verify.emailMessage ??
+            "The verification code to your new account is {####}",
+          emailSubject: verify.emailSubject ?? "Verify your new account",
+          smsMessage:
+            verify.smsMessage ??
+            "The verification code to your new account is {####}",
+        };
+      });
+    }
+
     function createUserPool() {
-      return new cognito.UserPool(
-        ...transform(
-          args.transform?.userPool,
-          `${name}UserPool`,
-          {
-            aliasAttributes:
-              args.aliases &&
-              output(args.aliases).apply((aliases) => [
-                ...(aliases.includes("email") ? ["email"] : []),
-                ...(aliases.includes("phone") ? ["phone_number"] : []),
-                ...(aliases.includes("preferred_username")
-                  ? ["preferred_username"]
-                  : []),
-              ]),
-            usernameAttributes:
-              args.usernames &&
-              output(args.usernames).apply((usernames) => [
-                ...(usernames.includes("email") ? ["email"] : []),
-                ...(usernames.includes("phone") ? ["phone_number"] : []),
-              ]),
-            accountRecoverySetting: {
-              recoveryMechanisms: [
-                {
-                  name: "verified_phone_number",
-                  priority: 1,
+      return output(args.softwareToken).apply(
+        (softwareToken) =>
+          new cognito.UserPool(
+            ...transform(
+              args.transform?.userPool,
+              `${name}UserPool`,
+              {
+                aliasAttributes:
+                  args.aliases &&
+                  output(args.aliases).apply((aliases) => [
+                    ...(aliases.includes("email") ? ["email"] : []),
+                    ...(aliases.includes("phone") ? ["phone_number"] : []),
+                    ...(aliases.includes("preferred_username")
+                      ? ["preferred_username"]
+                      : []),
+                  ]),
+                usernameAttributes:
+                  args.usernames &&
+                  output(args.usernames).apply((usernames) => [
+                    ...(usernames.includes("email") ? ["email"] : []),
+                    ...(usernames.includes("phone") ? ["phone_number"] : []),
+                  ]),
+                accountRecoverySetting: {
+                  recoveryMechanisms: [
+                    {
+                      name: "verified_phone_number",
+                      priority: 1,
+                    },
+                    {
+                      name: "verified_email",
+                      priority: 2,
+                    },
+                  ],
                 },
-                {
-                  name: "verified_email",
-                  priority: 2,
+                adminCreateUserConfig: {
+                  allowAdminCreateUserOnly: false,
                 },
-              ],
-            },
-            adminCreateUserConfig: {
-              allowAdminCreateUserOnly: false,
-            },
-            usernameConfiguration: {
-              caseSensitive: false,
-            },
-            autoVerifiedAttributes: all([
-              args.aliases || [],
-              args.usernames || [],
-            ]).apply(([aliases, usernames]) => {
-              const attributes = [...aliases, ...usernames];
-              return [
-                ...(attributes.includes("email") ? ["email"] : []),
-                ...(attributes.includes("phone") ? ["phone_number"] : []),
-              ];
-            }),
-            emailConfiguration: {
-              emailSendingAccount: "COGNITO_DEFAULT",
-            },
-            verificationMessageTemplate: {
-              defaultEmailOption: "CONFIRM_WITH_CODE",
-              emailMessage:
-                "The verification code to your new account is {####}",
-              emailSubject: "Verify your new account",
-              smsMessage: "The verification code to your new account is {####}",
-            },
-            userPoolAddOns: {
-              advancedSecurityMode: output(args.advancedSecurity).apply((v) =>
-                (v ?? "off").toUpperCase(),
-              ),
-            },
-            mfaConfiguration: output(args.mfa).apply((v) =>
-              (v ?? "off").toUpperCase(),
-            ),
-            smsAuthenticationMessage: args.smsAuthenticationMessage,
-            smsConfiguration: args.sms,
-            softwareTokenMfaConfiguration: args.softwareToken && {
-              enabled: true,
-            },
-            lambdaConfig:
-              triggers &&
-              triggers.apply((triggers) => {
-                return {
-                  kmsKeyId: triggers.kmsKey,
-                  createAuthChallenge: createTrigger("createAuthChallenge"),
-                  customEmailSender:
-                    triggers.customEmailSender === undefined
-                      ? undefined
-                      : {
-                          lambdaArn: createTrigger("customEmailSender")!,
-                          lambdaVersion: "V1_0",
-                        },
-                  customMessage: createTrigger("customMessage"),
-                  customSmsSender:
-                    triggers.customSmsSender === undefined
-                      ? undefined
-                      : {
-                          lambdaArn: createTrigger("customSmsSender")!,
-                          lambdaVersion: "V1_0",
-                        },
-                  defineAuthChallenge: createTrigger("defineAuthChallenge"),
-                  postAuthentication: createTrigger("postAuthentication"),
-                  postConfirmation: createTrigger("postConfirmation"),
-                  preAuthentication: createTrigger("preAuthentication"),
-                  preSignUp: createTrigger("preSignUp"),
-                  preTokenGenerationConfig:
-                    triggers.preTokenGeneration === undefined
-                      ? undefined
-                      : {
-                          lambdaArn: createTrigger("preTokenGeneration")!,
-                          lambdaVersion: triggers.preTokenGenerationVersion,
-                        },
-                  userMigration: createTrigger("userMigration"),
-                  verifyAuthChallengeResponse: createTrigger(
-                    "verifyAuthChallengeResponse",
+                usernameConfiguration: {
+                  caseSensitive: false,
+                },
+                autoVerifiedAttributes: all([
+                  args.aliases || [],
+                  args.usernames || [],
+                ]).apply(([aliases, usernames]) => {
+                  const attributes = [...aliases, ...usernames];
+                  return [
+                    ...(attributes.includes("email") ? ["email"] : []),
+                    ...(attributes.includes("phone") ? ["phone_number"] : []),
+                  ];
+                }),
+                emailConfiguration: {
+                  emailSendingAccount: "COGNITO_DEFAULT",
+                },
+                verificationMessageTemplate: verify,
+                userPoolAddOns: {
+                  advancedSecurityMode: output(args.advancedSecurity).apply(
+                    (v) => (v ?? "off").toUpperCase(),
                   ),
-                };
+                },
+                mfaConfiguration: output(args.mfa).apply((v) =>
+                  (v ?? "off").toUpperCase(),
+                ),
+                smsAuthenticationMessage: args.smsAuthenticationMessage,
+                smsConfiguration: args.sms,
+                softwareTokenMfaConfiguration: softwareToken
+                  ? { enabled: true }
+                  : undefined,
+                lambdaConfig:
+                  triggers &&
+                  triggers.apply((triggers) => {
+                    return {
+                      kmsKeyId: triggers.kmsKey,
+                      createAuthChallenge: createTrigger("createAuthChallenge"),
+                      customEmailSender:
+                        triggers.customEmailSender === undefined
+                          ? undefined
+                          : {
+                              lambdaArn: createTrigger("customEmailSender")!,
+                              lambdaVersion: "V1_0",
+                            },
+                      customMessage: createTrigger("customMessage"),
+                      customSmsSender:
+                        triggers.customSmsSender === undefined
+                          ? undefined
+                          : {
+                              lambdaArn: createTrigger("customSmsSender")!,
+                              lambdaVersion: "V1_0",
+                            },
+                      defineAuthChallenge: createTrigger("defineAuthChallenge"),
+                      postAuthentication: createTrigger("postAuthentication"),
+                      postConfirmation: createTrigger("postConfirmation"),
+                      preAuthentication: createTrigger("preAuthentication"),
+                      preSignUp: createTrigger("preSignUp"),
+                      preTokenGenerationConfig:
+                        triggers.preTokenGeneration === undefined
+                          ? undefined
+                          : {
+                              lambdaArn: createTrigger("preTokenGeneration")!,
+                              lambdaVersion: triggers.preTokenGenerationVersion,
+                            },
+                      userMigration: createTrigger("userMigration"),
+                      verifyAuthChallengeResponse: createTrigger(
+                        "verifyAuthChallengeResponse",
+                      ),
+                    };
 
-                function createTrigger(key: keyof Triggers) {
-                  if (!triggers[key]) return;
+                    function createTrigger(key: keyof Triggers) {
+                      if (!triggers[key]) return;
 
-                  const fn = functionBuilder(
-                    `${name}Trigger${key}`,
-                    triggers[key]!,
-                    {
-                      description: `Subscribed to ${key} from ${name}`,
-                    },
-                    undefined,
-                    { parent },
-                  );
+                      const fn = functionBuilder(
+                        `${name}Trigger${key}`,
+                        triggers[key]!,
+                        {
+                          description: `Subscribed to ${key} from ${name}`,
+                        },
+                        undefined,
+                        { parent },
+                      );
 
-                  new lambda.Permission(
-                    `${name}Permission${key}`,
-                    {
-                      action: "lambda:InvokeFunction",
-                      function: fn.arn,
-                      principal: "cognito-idp.amazonaws.com",
-                      sourceArn: userPool.arn,
-                    },
-                    { parent },
-                  );
-                  return fn.arn;
-                }
-              }),
-          },
-          { parent },
-        ),
+                      new lambda.Permission(
+                        `${name}Permission${key}`,
+                        {
+                          action: "lambda:InvokeFunction",
+                          function: fn.arn,
+                          principal: "cognito-idp.amazonaws.com",
+                          sourceArn: userPool.arn,
+                        },
+                        { parent },
+                      );
+                      return fn.arn;
+                    }
+                  }),
+              },
+              { parent },
+            ),
+          ),
       );
     }
   }

@@ -2,21 +2,25 @@ package errors
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
-	"github.com/sst/ion/cmd/sst/mosaic/aws"
-	"github.com/sst/ion/internal/util"
-	"github.com/sst/ion/pkg/project"
-	"github.com/sst/ion/pkg/project/provider"
-	"github.com/sst/ion/pkg/server"
+	"github.com/sst/sst/v3/cmd/sst/mosaic/aws"
+	"github.com/sst/sst/v3/cmd/sst/mosaic/aws/appsync"
+	"github.com/sst/sst/v3/internal/util"
+	"github.com/sst/sst/v3/pkg/project"
+	"github.com/sst/sst/v3/pkg/project/provider"
+	"github.com/sst/sst/v3/pkg/server"
 )
 
 type ErrorTransformer = func(err error) (bool, error)
 
 var transformers = []ErrorTransformer{
+	exact(appsync.ErrSubscriptionFailed, "Failed to subscribe to appsync websocket endpoint which powers live lambda. Check to see if you have proper appsync permissions."),
 	exact(project.ErrInvalidStageName, "The stage name is invalid. It can only contain alphanumeric characters and hyphens."),
 	exact(project.ErrInvalidAppName, "The app name is invalid. It can only contain alphanumeric characters and hyphens."),
-	exact(project.ErrV2Config, "You are using sst ion and this looks like an sst v2 config"),
+	exact(project.ErrAppNameChanged, "The app name has changed.\n\nIf you want to rename the app, make sure to run `sst remove` to remove the old app first. Alternatively, remove the \".sst\" folder and try again.\n"),
+	exact(project.ErrV2Config, "You are using sst v3 and this looks like an sst v2 config"),
 	exact(project.ErrStageNotFound, "Stage not found"),
 	exact(project.ErrPassphraseInvalid, "The passphrase for this app / stage is missing or invalid"),
 	exact(aws.ErrIoTDelay, "This aws account has not had iot initialized in it before which sst depends on. It may take a few minutes before it is ready."),
@@ -28,6 +32,12 @@ var transformers = []ErrorTransformer{
 	exact(provider.ErrBucketMissing, "The state bucket is missing, it may have been accidentally deleted. Go to https://console.aws.amazon.com/systems-manager/parameters/%252Fsst%252Fbootstrap/description?tab=Table and check if the state bucket mentioned there exists. If it doesn't you can recreate it or delete the `/sst/bootstrap` key to force recreation."),
 	exact(project.ErrBuildFailed, project.ErrBuildFailed.Error()),
 	exact(project.ErrVersionMismatch, project.ErrVersionMismatch.Error()),
+	exact(project.ErrProtectedStage, "Cannot remove protected stage. To remove a protected stage edit your sst.config.ts and remove the `protect` property."),
+	exact(provider.ErrLockNotFound, "This app / stage is not locked"),
+	exact(aws.ErrAppsyncNotReady, "SST creates an appsync event api to power live lambda. After 10 seconds of waiting this cli could not connect to it."),
+	match(func(err *project.ErrProviderVersionTooLow) string {
+		return fmt.Sprintf("You specified version %s of the \"%s\" provider. SST needs %s or higher.", err.Version, err.Name, err.Needed)
+	}),
 	func(err error) (bool, error) {
 		msg := err.Error()
 		if !strings.HasPrefix(msg, "aws:") {
@@ -52,11 +62,12 @@ func Transform(err error) error {
 	return err
 }
 
-func match[T error](transformer func(T) error) ErrorTransformer {
+func match[T error](transformer func(T) string) ErrorTransformer {
 	return func(err error) (bool, error) {
 		var match T
 		if errors.As(err, &match) {
-			return true, transformer(match)
+			str := transformer(match)
+			return true, util.NewReadableError(err, str)
 		}
 		return false, nil
 	}

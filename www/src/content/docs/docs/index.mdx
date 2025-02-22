@@ -4,6 +4,9 @@ description: Build full-stack apps on your own infrastructure.
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { LinkCard } from '@astrojs/starlight/components';
+import { Icon } from '@astrojs/starlight/components';
+import VideoAside from "../../../components/VideoAside.astro";
 import config from '../../../../config.ts';
 
 export const github  = config.github;
@@ -11,7 +14,7 @@ export const github  = config.github;
 SST is a framework that makes it easy to build modern full-stack applications on your own infrastructure.
 
 :::note
-SST supports over 150 providers. Check out the [full list](/docs/providers#directory).
+SST supports over 150 providers. Check out the [full list](/docs/all-providers#directory).
 :::
 
 What makes SST different is that your _entire_ app is **defined in code** — in a single `sst.config.ts` file. This includes databases, buckets, queues, Stripe webhooks, or any one of **150+ providers**.
@@ -64,28 +67,33 @@ For example, you can add your frontend and set the domain you want to use.
   </TabItem>
 </Tabs>
 
-Just like the frontend, you can configure backend features _in code_. Like Postgres, Redis, S3 Buckets, cron jobs, or your API deployed in container.
+Just like the frontend, you can configure backend features _in code_.
+
+Like your API deployed in a container. Or any Lambda functions, Postgres databases, S3 Buckets, or cron jobs.
 
 <Tabs>
   <TabItem label="Containers">
   ```ts title="sst.config.ts"
   const cluster = new sst.aws.Cluster("MyCluster", { vpc });
 
-  cluster.addService("MyService", {
+  new sst.aws.Service("MyService", {
+    cluster,
     loadBalancer: {
       ports: [{ listen: "80/http" }]
     }
   });
   ```
   </TabItem>
+  <TabItem label="Functions">
+  ```ts title="sst.config.ts"
+  new sst.aws.Function("MyFunction", {
+    handler: "src/lambda.handler"
+  });
+  ```
+  </TabItem>
   <TabItem label="Postgres">
   ```ts title="sst.config.ts"
   new sst.aws.Postgres("MyDatabase", { vpc });
-  ```
-  </TabItem>
-  <TabItem label="Redis">
-  ```ts title="sst.config.ts"
-  new sst.aws.Redis("MyRedis", { vpc });
   ```
   </TabItem>
   <TabItem label="Bucket">
@@ -104,16 +112,12 @@ Just like the frontend, you can configure backend features _in code_. Like Postg
 </Tabs>
 
 
-You can even set up Stripe webhooks in code.
+You can even set up your Stripe products in code.
 
 ```ts title="sst.config.ts"
-new stripe.WebhookEndpoint("MyStripeWebhook", {
-  url: "https://example.com/webhook",
-  enabledEvents: [
-    "payment_method.attached",
-    "payment_method.detached",
-    "payment_method.updated"
-  ]
+new stripe.Product("MyStripeProduct", {
+  name: "SST Paid Plan",
+  description: "This is how SST makes money",
 });
 ```
 
@@ -166,6 +170,8 @@ Learn more about [transforms](/docs/components#transforms).
 
 SST has built-in components for AWS and Cloudflare that make these services easier to use.
 
+<VideoAside title="Watch a video about providers in SST" href="https://youtu.be/rlR2f5N9mW4" />
+
 However it also supports components from any one of the **150+ Pulumi/Terraform providers**. For example, you can use Vercel for your frontends.
 
 ```ts title="sst.config.ts"
@@ -174,7 +180,7 @@ new vercel.Project("MyFrontend", {
 });
 ```
 
-Learn more about [Providers](/docs/providers) and check out the full list in the [Directory](/docs/providers#directory).
+Learn more about [Providers](/docs/providers) and check out the full list in the [Directory](/docs/all-providers#directory).
 
 ---
 
@@ -182,19 +188,27 @@ Learn more about [Providers](/docs/providers) and check out the full list in the
 
 Once you've added a couple of features, SST can help you link them together. This is great because you **won't need to hardcode** anything in your app.
 
-Let's say your app has a Next.js frontend and an S3 bucket for file uploads. You can `link` the bucket to your Next.js app.
+<VideoAside title="Watch a video on linking resources" href="https://youtu.be/s8cWklU4Akw" />
 
-```ts title="sst.config.ts" {4}
+Let's say you are deploying an Express app in a container and you want to upload files to an S3 bucket. You can `link` the bucket to your container.
+
+```ts title="sst.config.ts" {6}
 const bucket = new sst.aws.Bucket("MyBucket");
 
-new sst.aws.Nextjs("MyWeb", {
-  link: [bucket]
+const cluster = new sst.aws.Cluster("MyCluster", { vpc });
+
+new sst.aws.Service("MyService", {
+  cluster,
+  link: [bucket],
+  loadBalancer: {
+    ports: [{ listen: "80/http" }]
+  }
 });
 ```
 
-You can then use SST's [SDK](/docs/reference/sdk/) to access the S3 bucket in your Next.js app.
+You can then use SST's [SDK](/docs/reference/sdk/) to access the S3 bucket in your Express app.
 
-```ts title="app/page.tsx" "Resource.MyBucket.name"
+```ts title="index.mjs" "Resource.MyBucket.name"
 import { Resource } from "sst";
 
 console.log(Resource.MyBucket.name);
@@ -208,11 +222,13 @@ Learn more about [resource linking](/docs/linking/).
 
 We've looked at a couple of different types of files. Let's take a step back and see what an SST app looks like in practice.
 
+<VideoAside title="Watch a video about SST's project structure" href="https://youtu.be/mserRA-CWRw" />
+
 ---
 
 ### Drop-in mode
 
-The simplest way to run SST is to use it as a part of your frontend. This is called _drop-in mode_. For example, if you are using Next.js, you can add a `sst.config.ts` file to the root.
+The simplest way to run SST is to use it as a part of your app. This is called _drop-in mode_. For example, if you are building a Next.js app, you can add a `sst.config.ts` file to the root.
 
 ```txt {3}
 my-nextjs-app
@@ -230,9 +246,11 @@ View an <a href={`${github}/tree/dev/examples/aws-nextjs`}>example Next.js</a> a
 
 ### Monorepo
 
-Alternatively, you can use SST in a monorepo. This is useful if you have a backend and a frontend or you are working on a large project. In this case the `sst.config.ts` is in the root of your monorepo.
+Alternatively, you might use SST in a monorepo. This is useful because most projects have a frontend, a backend, and some functions.
 
-```txt {2}
+In this case, the `sst.config.ts` is still in the root but you can split it up into parts in the `infra/` directory.
+
+```txt {2,9}
 my-sst-app
 ├─ sst.config.ts
 ├─ package.json
@@ -286,9 +304,7 @@ This brings up a _multiplexer_ that:
 4. Starts your frontend and container services in dev mode and links it to your infrastructure.
 
 
-:::tip
-The `sst dev` command runs your functions _**live**_, letting you test changes to your functions in milliseconds. [Learn more](/docs/live/).
-:::
+<VideoAside title="Watch a video about dev mode" href="https://youtu.be/mefLc137EB0" />
 
 The `sst dev` CLI makes it so that you won’t have to start your frontend or container applications separately. Learn more about [`sst dev`](/docs/reference/cli/#dev).
 

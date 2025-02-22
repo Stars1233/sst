@@ -8,14 +8,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
 
-	"github.com/sst/ion/internal/util"
-	"github.com/sst/ion/pkg/process"
+	"github.com/sst/sst/v3/internal/util"
+	"github.com/sst/sst/v3/pkg/process"
 )
 
-var BINARY_PATH = "/opt/sst/sst" + "1"
+var BINARY_PATH = "/opt/sst/tunnel"
 
 func NeedsInstall() bool {
 	if _, err := os.Stat(BINARY_PATH); err == nil {
@@ -47,7 +48,7 @@ func Install() error {
 	}
 	err = os.Chmod(BINARY_PATH, 0755)
 	user := os.Getenv("SUDO_USER")
-	sudoersPath := "/etc/sudoers.d/sst-" + user
+	sudoersPath := "/etc/sudoers.d/sst-" + strings.ReplaceAll(user, ".", "")
 	slog.Info("creating sudoers file", "path", sudoersPath)
 	command := BINARY_PATH + " tunnel start *"
 	sudoersEntry := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:SETENV: %s\n", user, command)

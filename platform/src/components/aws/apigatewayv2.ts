@@ -446,7 +446,7 @@ export interface ApiGatewayV2AuthorizerArgs {
      * }
      * ```
      */
-    function: Input<string | FunctionArgs>;
+    function: Input<string | FunctionArgs | FunctionArn>;
     /**
      * The JWT payload version.
      * @default `"2.0"`
@@ -522,9 +522,10 @@ export interface ApiGatewayV2RouteArgs {
     | false
     | {
         /**
-         * Enable IAM authorization for a given API route. When IAM auth is enabled, clients need to use Signature Version 4 to sign their requests with their AWS credentials.
+         * Enable IAM authorization for a given API route. When IAM auth is enabled, clients
+         * need to use Signature Version 4 to sign their requests with their AWS credentials.
          */
-        iam?: Input<true>;
+        iam?: Input<boolean>;
         /**
          * Enable JWT or JSON Web Token authorization for a given API route. When JWT auth is enabled, clients need to include a valid JWT in their requests.
          *
@@ -691,7 +692,7 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
     const vpcLink = createVpcLink();
     const api = createApi();
     const logGroup = createLogGroup();
-    createStage();
+    const stage = createStage();
 
     const certificateArn = createSsl();
     const apigDomain = createDomainName();
@@ -826,13 +827,13 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
               (accessLog) => RETENTION[accessLog.retention],
             ),
           },
-          { parent },
+          { parent, ignoreChanges: ["name"] },
         ),
       );
     }
 
     function createStage() {
-      new apigatewayv2.Stage(
+      return new apigatewayv2.Stage(
         ...transform(
           args.transform?.stage,
           `${name}Stage`,
@@ -944,7 +945,7 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
             {
               apiId: api.id,
               domainName: apigDomain.id,
-              stage: "$default",
+              stage: stage.name,
               apiMappingKey: path,
             },
             { parent },
@@ -1050,7 +1051,7 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
    *
    * ```js title="sst.config.ts"
    * api.route("GET /", "src/get.handler")
-   * api.route($default, "src/default.handler");
+   * api.route("$default", "src/default.handler");
    * ```
    *
    * Add a parameterized route.
@@ -1147,7 +1148,7 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
    */
   public routeUrl(
     rawRoute: string,
-    url: string,
+    url: Input<string>,
     args: ApiGatewayV2RouteArgs = {},
   ) {
     const route = this.parseRoute(rawRoute);
@@ -1357,6 +1358,7 @@ export class ApiGatewayV2 extends Component implements Link.Linkable {
           name: selfName,
           executionArn: this.api.executionArn,
         },
+        type: "http",
         ...args,
       },
       { provider: this.constructorOpts.provider },

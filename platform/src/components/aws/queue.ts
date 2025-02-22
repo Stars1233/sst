@@ -57,6 +57,20 @@ export interface QueueArgs {
       }
   >;
   /**
+   * The period of time which the delivery of all messages in the queue is delayed.
+   *
+   * This can range from 0 seconds to 900 seconds (15 minutes).
+   *
+   * @default `"0 seconds"`
+   * @example
+   * ```js
+   * {
+   *   delay: "10 seconds"
+   * }
+   * ```
+   */
+  delay?: Input<DurationMinutes>;
+  /**
    * Visibility timeout is a period of time during which a message is temporarily
    * invisible to other consumers after a consumer has retrieved it from the queue.
    * This mechanism prevents other consumers from processing the same message
@@ -278,6 +292,11 @@ export interface QueueSubscriberArgs {
   };
 }
 
+interface QueueRef {
+  ref: true;
+  queueUrl: Input<string>;
+}
+
 /**
  * The `Queue` component lets you add a serverless queue to your app. It uses [Amazon SQS](https://aws.amazon.com/sqs/).
  *
@@ -341,17 +360,31 @@ export class Queue extends Component implements Link.Linkable {
     opts: ComponentResourceOptions = {},
   ) {
     super(__pulumiType, name, args, opts);
-
-    const parent = this;
-    const fifo = normalizeFifo();
-    const dlq = normalizeDlq();
-    const visibilityTimeout = normalizeVisibilityTimeout();
-
-    const queue = createQueue();
-
+    const self = this;
     this.constructorName = name;
     this.constructorOpts = opts;
-    this.queue = queue;
+
+    if (args && "ref" in args) {
+      const ref = reference();
+      this.queue = ref.queue;
+      return;
+    }
+
+    const fifo = normalizeFifo();
+    const dlq = normalizeDlq();
+    const visibilityTimeout = output(args?.visibilityTimeout ?? "30 seconds");
+    const delay = output(args?.delay ?? "0 seconds");
+
+    this.queue = createQueue();
+
+    function reference() {
+      const ref = args as QueueRef;
+      const queue = sqs.Queue.get(`${name}Queue`, ref.queueUrl, undefined, {
+        parent: self,
+      });
+
+      return { queue };
+    }
 
     function normalizeFifo() {
       return output(args?.fifo).apply((v) => {
@@ -375,10 +408,6 @@ export class Queue extends Component implements Link.Linkable {
       );
     }
 
-    function normalizeVisibilityTimeout() {
-      return output(args?.visibilityTimeout).apply((v) => v ?? "30 seconds");
-    }
-
     function createQueue() {
       return new sqs.Queue(
         ...transform(
@@ -392,6 +421,7 @@ export class Queue extends Component implements Link.Linkable {
             visibilityTimeoutSeconds: visibilityTimeout.apply((v) =>
               toSeconds(v),
             ),
+            delaySeconds: delay.apply((v) => toSeconds(v)),
             redrivePolicy:
               dlq &&
               jsonStringify({
@@ -399,7 +429,7 @@ export class Queue extends Component implements Link.Linkable {
                 maxReceiveCount: dlq.retry,
               }),
           },
-          { parent },
+          { parent: self },
         ),
       );
     }
@@ -573,6 +603,52 @@ export class Queue extends Component implements Link.Linkable {
         opts,
       );
     });
+  }
+
+  /**
+   * Reference an existing SQS Queue with its queue URL. This is useful when you create a
+   * queue in one stage and want to share it in another stage. It avoids having to create
+   * a new queue in the other stage.
+   *
+   * :::tip
+   * You can use the `static get` method to share SQS queues across stages.
+   * :::
+   *
+   * @param name The name of the component.
+   * @param queueUrl The URL of the existing SQS Queue.
+   * @param opts? Resource options.
+   *
+   * @example
+   * Imagine you create a queue in the `dev` stage. And in your personal stage `frank`,
+   * instead of creating a new queue, you want to share the queue from `dev`.
+   *
+   * ```ts title="sst.config.ts"
+   * const queue = $app.stage === "frank"
+   *   ? sst.aws.Queue.get("MyQueue", "https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue")
+   *   : new sst.aws.Queue("MyQueue");
+   * ```
+   *
+   * Here `https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue` is the URL of the queue
+   * created in the `dev` stage. You can find this by outputting the queue URL in the `dev`
+   * stage.
+   *
+   * ```ts title="sst.config.ts"
+   * return queue.url;
+   * ```
+   */
+  public static get(
+    name: string,
+    queueUrl: Input<string>,
+    opts?: ComponentResourceOptions,
+  ) {
+    return new Queue(
+      name,
+      {
+        ref: true,
+        queueUrl,
+      } as QueueArgs,
+      opts,
+    );
   }
 
   /** @internal */

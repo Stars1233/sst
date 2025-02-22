@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sst/ion/pkg/project/path"
+	"github.com/sst/sst/v3/pkg/project/path"
 )
 
 type Runtime interface {
@@ -41,6 +41,7 @@ type BuildInput struct {
 		From string `json:"from"`
 		To   string `json:"to"`
 	} `json:"copyFiles"`
+	IsContainer bool `json:"isContainer,omitempty"`
 }
 
 func (input *BuildInput) Out() string {
@@ -52,9 +53,10 @@ func (input *BuildInput) Out() string {
 }
 
 type BuildOutput struct {
-	Out     string   `json:"out"`
-	Handler string   `json:"handler"`
-	Errors  []string `json:"errors"`
+	Out        string   `json:"out"`
+	Handler    string   `json:"handler"`
+	Errors     []string `json:"errors"`
+	Sourcemaps []string `json:"sourcemaps"`
 }
 
 type RunInput struct {
@@ -124,6 +126,9 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 	}
 
 	result.Out = out
+	if result.Sourcemaps == nil {
+		result.Sourcemaps = []string{}
+	}
 
 	if len(input.CopyFiles) > 0 {
 		for _, item := range input.CopyFiles {
@@ -142,7 +147,9 @@ func (c *Collection) Build(ctx context.Context, input *BuildInput) (*BuildOutput
 			}
 			if input.Dev {
 				if err := os.Symlink(from, dest); err != nil {
-					return nil, err
+					if !os.IsExist(err) {
+						return nil, err
+					}
 				}
 			}
 			// copying fiels still happens in node

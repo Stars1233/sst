@@ -12,11 +12,10 @@ import (
 
 	"github.com/evanw/esbuild/pkg/api"
 	esbuild "github.com/evanw/esbuild/pkg/api"
-	"github.com/sst/ion/internal/fs"
-	"github.com/sst/ion/pkg/js"
-	"github.com/sst/ion/pkg/process"
-	"github.com/sst/ion/pkg/project/path"
-	"github.com/sst/ion/pkg/runtime"
+	"github.com/sst/sst/v3/internal/fs"
+	"github.com/sst/sst/v3/pkg/js"
+	"github.com/sst/sst/v3/pkg/process"
+	"github.com/sst/sst/v3/pkg/runtime"
 )
 
 var forceExternal = []string{
@@ -24,6 +23,8 @@ var forceExternal = []string{
 }
 
 func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtime.BuildOutput, error) {
+	log := slog.Default().With("service", "runtime.node").With("functionID", input.FunctionID)
+
 	r.concurrency.Acquire(ctx, 1)
 	defer r.concurrency.Release(1)
 	var properties NodeProperties
@@ -42,19 +43,9 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		extension = ".cjs"
 	}
 
-	rel, err := filepath.Rel(path.ResolveRootDir(input.CfgPath), file)
-	if err != nil {
-		return nil, err
-	}
-
-	fileName := strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
-	// Lambda handler can only contain 1 dot separating the file name and function name
-	fileName = strings.ReplaceAll(fileName, ".", "-")
-	folder := filepath.Dir(rel)
-	path := filepath.Join(folder, fileName)
-	handler := path + filepath.Ext(input.Handler)
-	target := filepath.Join(input.Out(), path+extension)
-	slog.Info("loader info", "loader", properties.Loader)
+	handler := "bundle" + filepath.Ext(input.Handler)
+	target := filepath.Join(input.Out(), "bundle"+extension)
+	log.Info("loader info", "loader", properties.Loader)
 
 	loader := map[string]esbuild.Loader{}
 	for key, value := range properties.Loader {
@@ -112,9 +103,6 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 	}
 	external := append(forceExternal, properties.Install...)
 	external = append(external, properties.ESBuild.External...)
-	if err != nil {
-		return nil, err
-	}
 	options := esbuild.BuildOptions{
 		EntryPoints: []string{file},
 		Platform:    esbuild.PlatformNode,
@@ -169,8 +157,8 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 			options.MinifySyntax = properties.Minify
 			options.MinifyIdentifiers = properties.Minify
 		}
-		if !properties.SourceMap {
-			options.Sourcemap = esbuild.SourceMapNone
+		if properties.SourceMap != nil && *properties.SourceMap == false {
+			options.Sourcemap = esbuild.SourceMapLinked
 		}
 	}
 
@@ -178,14 +166,26 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		options.Target = properties.ESBuild.Target
 	}
 
-	buildContext, ok := r.contexts.Load(input.FunctionID)
-	if !ok {
-		buildContext, _ = esbuild.Context(options)
-		r.contexts.Store(input.FunctionID, buildContext)
+	var result esbuild.BuildResult
+
+	log.Info("running esbuild")
+	if !input.Dev {
+		context, _ := esbuild.Context(options)
+		result = context.Rebuild()
+		context.Dispose()
 	}
 
-	result := buildContext.(esbuild.BuildContext).Rebuild()
-	r.results.Store(input.FunctionID, result)
+	if input.Dev {
+		match, ok := r.contexts.Load(input.FunctionID)
+		if !ok {
+			match, _ = esbuild.Context(options)
+			r.contexts.Store(input.FunctionID, match)
+		}
+		result = match.(esbuild.BuildContext).Rebuild()
+		r.results.Store(input.FunctionID, result)
+	}
+	log.Info("esbuild finished")
+
 	errors := []string{}
 	for _, error := range result.Errors {
 		text := error.Text
@@ -195,10 +195,10 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		errors = append(errors, text)
 	}
 	for _, error := range result.Errors {
-		slog.Error("esbuild error", "error", error)
+		log.Error("esbuild error", "error", error)
 	}
 	for _, warning := range result.Warnings {
-		slog.Error("esbuild error", "error", warning)
+		log.Error("esbuild error", "error", warning)
 	}
 
 	if input.Dev {
@@ -208,7 +208,15 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		}
 	}
 
+	sourcemaps := []string{}
 	if !input.Dev {
+		if properties.SourceMap == nil {
+			for _, file := range result.OutputFiles {
+				if strings.HasSuffix(file.Path, ".map") {
+					sourcemaps = append(sourcemaps, file.Path)
+				}
+			}
+		}
 		var metafile js.Metafile
 		json.Unmarshal([]byte(result.Metafile), &metafile)
 
@@ -227,6 +235,7 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 		}
 
 		if len(installPackages) > 0 {
+			log.Info("installing", "packages", installPackages)
 			src, err := fs.FindUp(filepath.Dir(target), "package.json")
 			if err != nil {
 				return nil, err
@@ -260,6 +269,7 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 
 			cmd := []string{
 				"install",
+				// npm will refuse to install packages if platform does not match
 				"--force",
 				"--platform=linux",
 				"--os=linux",
@@ -275,15 +285,19 @@ func (r *Runtime) Build(ctx context.Context, input *runtime.BuildInput) (*runtim
 			}
 			proc := process.Command("npm", cmd...)
 			proc.Dir = input.Out()
-			err = proc.Run()
+			log.Info("running npm", "cmd", cmd)
+			output, err := proc.CombinedOutput()
+			slog.Info("npm output", "output", string(output))
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to run npm install: %w", err)
 			}
+			log.Info("done installing", "packages", installPackages)
 		}
 	}
 
 	return &runtime.BuildOutput{
-		Handler: handler,
-		Errors:  errors,
+		Handler:    handler,
+		Errors:     errors,
+		Sourcemaps: sourcemaps,
 	}, nil
 }

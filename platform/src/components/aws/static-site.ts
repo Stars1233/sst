@@ -73,12 +73,14 @@ export interface StaticSiteArgs extends BaseStaticSiteArgs {
     /**
      * Configure the viewer request function.
      *
-     * The viewer request function can be used to modify incoming requests before they reach
-     * your origin server. For example, you can redirect users, rewrite URLs, or add headers.
+     * The viewer request function can be used to modify incoming requests before they
+     * reach your origin server. For example, you can redirect users, rewrite URLs,
+     * or add headers.
      *
-     * By default, a viewer request function is created to rewrite URLs to:
-     * - Append `index.html` to the URL if the URL ends with a `/`.
-     * - Append `.html` to the URL if the URL does not contain a file extension.
+     * By default, a viewer request function is created to:
+     * - Disable CloudFront default URL if custom domain is set.
+     * - Rewrite URLs to append `index.html` to the URL if the URL ends with a `/`.
+     * - Rewrite URLs to append `.html` to the URL if the URL does not contain a file extension.
      *
      * @example
      *
@@ -625,7 +627,7 @@ export class StaticSite extends Component implements Link.Linkable {
     const { sitePath, environment, indexPage } = prepare(args);
     const dev = normalizeDev();
 
-    if ($dev && args.dev !== false) {
+    if (dev.enabled) {
       this.devUrl = dev.url;
       this.registerOutputs({
         _metadata: {
@@ -634,7 +636,7 @@ export class StaticSite extends Component implements Link.Linkable {
           environment,
           url: this.url,
         },
-        _dev: dev,
+        _dev: dev.outputs,
       });
       return;
     }
@@ -664,18 +666,23 @@ export class StaticSite extends Component implements Link.Linkable {
         environment,
         url: this.url,
       },
-      _dev: dev,
+      _dev: dev.outputs,
     });
 
     function normalizeDev() {
-      const dev = args.dev === false ? {} : args.dev ?? {};
+      const enabled = $dev && args.dev !== false;
+      const devArgs = args.dev || {};
+
       return {
-        ...dev,
-        environment,
-        url: output(dev.url).apply((v) => v ?? URL_UNAVAILABLE),
-        command: output(dev.command).apply((v) => v ?? "npm run dev"),
-        autostart: output(dev.autostart).apply((v) => v ?? true),
-        directory: output(dev.directory).apply((v) => v ?? sitePath),
+        enabled,
+        url: output(devArgs.url ?? URL_UNAVAILABLE),
+        outputs: {
+          title: devArgs.title,
+          environment,
+          command: output(devArgs.command ?? "npm run dev"),
+          autostart: output(devArgs.autostart ?? true),
+          directory: output(devArgs.directory ?? sitePath),
+        },
       };
     }
 
@@ -695,7 +702,7 @@ export class StaticSite extends Component implements Link.Linkable {
       return new OriginAccessControl(
         `${name}S3AccessControl`,
         { name: physicalName(64, name) },
-        { parent },
+        { parent, ignoreChanges: ["name"] },
       );
     }
 
@@ -760,7 +767,7 @@ export class StaticSite extends Component implements Link.Linkable {
             ...(await Promise.all(
               files.map(async (file) => {
                 const source = path.resolve(outputPath, file);
-                const content = await fs.promises.readFile(source);
+                const content = await fs.promises.readFile(source, "utf-8");
                 const hash = crypto
                   .createHash("sha256")
                   .update(content)
@@ -870,6 +877,23 @@ export class StaticSite extends Component implements Link.Linkable {
         if (typeof edge?.viewerRequest === "string")
           return output(edge.viewerRequest);
 
+        const disableUrlInjection = `
+if (event.request.headers.host.value.includes('cloudfront.net')) {
+  return {
+    statusCode: 403,
+    statusDescription: 'Forbidden',
+    body: {
+      encoding: "text",
+      data: '<html><head><title>403 Forbidden</title></head><body><center><h1>403 Forbidden</h1></center></body></html>'
+    }
+  };
+}`;
+        const redirectInjection = `
+if (event.request.uri.endsWith('/')) {
+  event.request.uri += 'index.html';
+} else if (!event.request.uri.includes('.')) {
+  event.request.uri += '.html';
+}`;
         return new cloudfront.Function(
           `${name}Function`,
           {
@@ -877,11 +901,8 @@ export class StaticSite extends Component implements Link.Linkable {
             keyValueStoreAssociations: edge?.viewerRequest?.kvStores ?? [],
             code: `
 async function handler(event) {
-  if (event.request.uri.endsWith('/')) {
-    event.request.uri += 'index.html';
-  } else if (!event.request.uri.includes('.')) {
-    event.request.uri += '.html';
-  }
+  ${args.domain ? disableUrlInjection : ""}
+  ${redirectInjection}
   ${edge?.viewerRequest?.injection ?? ""}
   return event.request;
 }`,
@@ -942,7 +963,9 @@ async function handler(event) {
             follow: true,
             cwd: path.resolve(outputPath),
           }).forEach((filePath) =>
-            hash.update(fs.readFileSync(path.resolve(outputPath, filePath))),
+            hash.update(
+              fs.readFileSync(path.resolve(outputPath, filePath), "utf-8"),
+            ),
           );
 
           return {

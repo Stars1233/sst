@@ -6,14 +6,13 @@ import (
 	"net/rpc"
 	"sync"
 
-	"github.com/sst/ion/pkg/project"
-	"github.com/sst/ion/pkg/project/provider"
+	"github.com/sst/sst/v3/pkg/project"
+	"github.com/sst/sst/v3/pkg/project/provider"
 )
 
 type aws struct {
-	project        *project.Project
-	bootstrapCache map[string]*provider.AwsBootstrapData
-	lock           sync.RWMutex
+	sync.Mutex
+	project *project.Project
 }
 
 type BootstrapInput struct {
@@ -21,35 +20,44 @@ type BootstrapInput struct {
 }
 
 func (a *aws) Bootstrap(input *BootstrapInput, output *provider.AwsBootstrapData) error {
-	a.lock.RLock()
-	cached, ok := a.bootstrapCache[input.Region]
-	a.lock.RUnlock()
-	if ok {
-		*output = *cached
-		return nil
-	}
 	unknown, ok := a.project.Provider("aws")
 	if !ok {
 		return fmt.Errorf("aws provider not found")
 	}
 	existing := unknown.(*provider.AwsProvider)
-	cfg := existing.Config()
-	cfg.Region = input.Region
-	data, err := provider.AwsBootstrap(cfg)
+	data, err := existing.Bootstrap(input.Region)
 	if err != nil {
 		return err
 	}
-	a.lock.Lock()
-	a.bootstrapCache[input.Region] = data
-	a.lock.Unlock()
 	*output = *data
+	return nil
+}
+
+type AppsyncInput struct {
+}
+type AppsyncOutput struct {
+	Http     string `json:"http"`
+	Realtime string `json:"realtime"`
+}
+
+func (a *aws) Appsync(input *AppsyncInput, output *AppsyncOutput) error {
+	unknown, ok := a.project.Provider("aws")
+	if !ok {
+		return fmt.Errorf("aws provider not found")
+	}
+	existing := unknown.(*provider.AwsProvider)
+	http, realtime, err := existing.ResolveAppSync(context.Background())
+	if err != nil {
+		return err
+	}
+	output.Http = http
+	output.Realtime = realtime
 	return nil
 }
 
 func Register(ctx context.Context, p *project.Project, r *rpc.Server) error {
 	r.RegisterName("Provider.Aws", &aws{
-		project:        p,
-		bootstrapCache: map[string]*provider.AwsBootstrapData{},
+		project: p,
 	})
 	return nil
 }

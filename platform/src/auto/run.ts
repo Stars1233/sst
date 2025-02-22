@@ -1,16 +1,12 @@
 import { Link } from "../components/link";
 import {
   ResourceTransformationArgs,
-  interpolate,
   runtime,
   automation,
   output,
 } from "@pulumi/pulumi";
 
 import { VisibleError } from "../components/error";
-import { dynamodb } from "@pulumi/aws";
-import { Linkable } from "../components";
-import { permission } from "../components/aws/permission.js";
 
 export async function run(program: automation.PulumiFn) {
   process.chdir($cli.paths.root);
@@ -19,17 +15,9 @@ export async function run(program: automation.PulumiFn) {
   addTransformationToAddTags();
   addTransformationToCheckBucketsHaveMultiplePolicies();
 
-  Linkable.wrap(dynamodb.Table, (item) => ({
-    properties: { tableName: item.name },
-    include: [
-      permission({
-        actions: ["dynamodb:*"],
-        resources: [item.arn, interpolate`${item.arn}/*`],
-      }),
-    ],
-  }));
   Link.reset();
   const outputs = (await program()) || {};
+  outputs._protect = $app.protect;
   return outputs;
 }
 
@@ -43,9 +31,11 @@ function addTransformationToRetainResourcesOnDelete() {
           "aws:rds/instance:Instance",
           "aws:s3/bucket:Bucket",
           "aws:s3/bucketV2:BucketV2",
+          "planetscale:index/database:Database",
+          "planetscale:index/branch:Branch",
         ].includes(args.type))
     ) {
-      args.opts.retainOnDelete = true;
+      args.opts.retainOnDelete = args.opts.retainOnDelete ?? true;
       return args;
     }
     return undefined;
