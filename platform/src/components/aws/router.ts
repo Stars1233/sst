@@ -1709,7 +1709,7 @@ async function handler(event) {
   /**
    * Add a route to a destination URL.
    *
-   * @param pattern The path pattern to match for this route.
+   * @param pattern The path prefix to match for this route.
    * @param url The destination URL to route matching requests to.
    * @param args Configure the route.
    *
@@ -1717,11 +1717,11 @@ async function handler(event) {
    *
    * You can match a route based on:
    *
-   * - A path like `/api`
+   * - A path prefix like `/api`
    * - A domain pattern like `api.example.com`
    * - A combined pattern like `dev.example.com/api`
    *
-   * For example, to match a path.
+   * For example, to match a path prefix.
    *
    * ```ts title="sst.config.ts"
    * router.route("/api", "https://api.example.com");
@@ -1783,7 +1783,7 @@ async function handler(event) {
   /**
    * Add a route to an S3 bucket.
    *
-   * @param pattern The path pattern to match for this route.
+   * @param pattern The path prefix to match for this route.
    * @param bucket The S3 bucket to route matching requests to.
    * @param args Configure the route.
    *
@@ -1799,11 +1799,11 @@ async function handler(event) {
    *
    * You can match a pattern and route to it based on:
    *
-   * - A path like `/api`
+   * - A path prefix like `/api`
    * - A domain pattern like `api.example.com`
    * - A combined pattern like `dev.example.com/api`
    *
-   * For example, to match a path.
+   * For example, to match a path prefix.
    *
    * ```ts title="sst.config.ts"
    * router.routeBucket("/files", bucket);
@@ -1865,7 +1865,7 @@ async function handler(event) {
   /**
    * Add a route to a frontend or static site.
    *
-   * @param pattern The path pattern to match for this route.
+   * @param pattern The path prefix to match for this route.
    * @param site The frontend or static site to route matching requests to.
    *
    * @deprecated The `routeSite` function has been deprecated. Set the `route` on the
